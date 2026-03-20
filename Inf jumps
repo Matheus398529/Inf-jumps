@@ -1,5 +1,5 @@
 -- ================================================================
---  MOON COPY LITE — PRO EDITION v1.5
+--  MOON COPY LITE – PRO EDITION v3.5
 --  + Seleção por clique com borda azul brilhante
 -- ================================================================
 
@@ -7,11 +7,13 @@ local PRO_KEYS = {
     "VipKey_9283919d92d",
     "VipKey_3973910209d",
     "VipKey_938392010101k",
+    "VipKey_927392028292k",
+    "VipKey_928202938202k",
 }
 
 local CONFIG = {
     PRODUCT_NAME   = "Moon Copy Lite",
-    VERSION        = "Pro 1.5",
+    VERSION        = "Pro 3.5",
     FREE_MAX_SAVES = 50,
     PRO_MAX_SAVES  = 999999,
     KEY_FILE       = "MoonCopyLite/key.txt",
@@ -35,6 +37,1616 @@ local HttpService      = game:GetService("HttpService")
 local CoreGui          = game:GetService("CoreGui")
 local Selection        = game:GetService("Selection")
 
+local LocalPlayer = Players.LocalPlayer
+local Mouse       = LocalPlayer:GetMouse()
+local Camera      = workspace.CurrentCamera
+
+local FOLDER        = "MoonCopyLite"
+local IDX_FILE      = FOLDER.."/index.json"
+local FOLDERS_FILE  = FOLDER.."/folders.json"
+local BACKUP_FOLDER = FOLDER.."/backups"
+local BATCH_SIZE    = 20
+
+local LastAction    = "Pronto."
+local SortMode      = "date"
+local CurrentFolder = nil
+
+local TAG_COLORS = {
+    {name="Vermelho", color=Color3.fromRGB(215,65,65)},
+    {name="Laranja",  color=Color3.fromRGB(255,140,40)},
+    {name="Amarelo",  color=Color3.fromRGB(255,210,50)},
+    {name="Verde",    color=Color3.fromRGB(80,200,120)},
+    {name="Azul",     color=Color3.fromRGB(88,166,255)},
+    {name="Roxo",     color=Color3.fromRGB(160,100,255)},
+    {name="Rosa",     color=Color3.fromRGB(255,100,180)},
+    {name="Branco",   color=Color3.fromRGB(200,200,210)},
+}
+
+local function SetLastAction(msg) LastAction=msg end
+
+local function EnsureFolder()
+    if not isfolder(FOLDER)        then makefolder(FOLDER)        end
+    if not isfolder(BACKUP_FOLDER) then makefolder(BACKUP_FOLDER) end
+end
+
+local function LoadIndex()
+    EnsureFolder()
+    if not isfile(IDX_FILE) then return {} end
+    local ok,data=pcall(function() return HttpService:JSONDecode(readfile(IDX_FILE)) end)
+    if not ok or type(data)~="table" then return {} end
+    return data
+end
+
+local function SaveIndex(index)
+    EnsureFolder()
+    pcall(writefile,IDX_FILE,HttpService:JSONEncode(index))
+end
+
+local function SaveKeyLocal(key)
+    EnsureFolder()
+    pcall(writefile,CONFIG.KEY_FILE,key)
+end
+
+local function LoadKeyLocal()
+    if not isfile(CONFIG.KEY_FILE) then return nil end
+    local ok,k=pcall(readfile,CONFIG.KEY_FILE)
+    return ok and k:match("^%s*(.-)%s*$") or nil
+end
+
+local function OpSave(name,json,itemCount,mode,password,tag,folder)
+    local index=LoadIndex()
+    for _,e in ipairs(index) do if e.name==name then return false,"Nome já existe!" end end
+    if #index>=MaxSaves() then
+        return false,IsPro() and "Limite atingido" or "Limite de "..CONFIG.FREE_MAX_SAVES.." saves!\n⭐ Ative o Pro para ilimitados."
+    end
+    local path=FOLDER.."/"..name..".json"
+    local ok=pcall(writefile,path,json)
+    if not ok then return false,"Erro ao gravar!" end
+    table.insert(index,1,{
+        name=name,itemCount=itemCount,time=os.time(),mode=mode,size=#json,
+        hasPassword=(password and password~="") and true or false,
+        tag=tag or nil,folder=folder or nil,favorite=false,
+    })
+    SaveIndex(index)
+    return true
+end
+
+local function OpLoad(name)
+    local path=FOLDER.."/"..name..".json"
+    if not isfile(path) then
+        local index=LoadIndex()
+        for i,e in ipairs(index) do if e.name==name then table.remove(index,i);break end end
+        SaveIndex(index)
+        return false,"Arquivo não encontrado!"
+    end
+    local ok,json=pcall(readfile,path)
+    if not ok or not json or json=="" then return false,"Arquivo corrompido!" end
+    return true,json
+end
+
+local function OpDelete(name)
+    pcall(delfile,FOLDER.."/"..name..".json")
+    local index=LoadIndex()
+    for i,e in ipairs(index) do if e.name==name then table.remove(index,i);break end end
+    SaveIndex(index)
+end
+
+local function OpRename(oldName,newName)
+    if oldName==newName then return false,"Nome igual!" end
+    newName=newName:gsub('[/\\:*?"<>|]','_')
+    local index=LoadIndex()
+    for _,e in ipairs(index) do if e.name==newName then return false,"Nome já existe!" end end
+    local oldPath=FOLDER.."/"..oldName..".json"
+    local newPath=FOLDER.."/"..newName..".json"
+    if not isfile(oldPath) then return false,"Save não encontrado!" end
+    local ok,json=pcall(readfile,oldPath)
+    if not ok then return false,"Erro ao ler!" end
+    pcall(writefile,newPath,json);pcall(delfile,oldPath)
+    for _,e in ipairs(index) do if e.name==oldName then e.name=newName;break end end
+    SaveIndex(index)
+    return true
+end
+
+local function OpDuplicate(name)
+    local ok,json=OpLoad(name)
+    if not ok then return false,json end
+    local newName=name.."_copy";local counter=1
+    local index=LoadIndex();local exists={}
+    for _,e in ipairs(index) do exists[e.name]=true end
+    while exists[newName] do counter=counter+1;newName=name.."_copy"..counter end
+    local dok,data=pcall(function() return HttpService:JSONDecode(json) end)
+    local itemCount=dok and #(data.Items or {}) or 0
+    return OpSave(newName,json,itemCount,"workspace")
+end
+
+local function OpToggleFavorite(name)
+    local index=LoadIndex()
+    for _,e in ipairs(index) do if e.name==name then e.favorite=not e.favorite;break end end
+    SaveIndex(index)
+end
+
+local function OpSetTag(name,tagIdx)
+    local index=LoadIndex()
+    for _,e in ipairs(index) do
+        if e.name==name then e.tag=(tagIdx and tagIdx>0) and tagIdx or nil;break end
+    end
+    SaveIndex(index)
+end
+
+local function OpSetFolder(name,folderName)
+    local index=LoadIndex()
+    for _,e in ipairs(index) do
+        if e.name==name then e.folder=(folderName and folderName~="") and folderName or nil;break end
+    end
+    SaveIndex(index)
+end
+
+local function SyncIndex()
+    EnsureFolder()
+    local index=LoadIndex();local synced={}
+    for _,e in ipairs(index) do
+        if isfile(FOLDER.."/"..e.name..".json") then table.insert(synced,e) end
+    end
+    local ok,files=pcall(listfiles,FOLDER)
+    if ok then
+        local indexed={}
+        for _,e in ipairs(synced) do indexed[e.name]=true end
+        for _,f in ipairs(files) do
+            local fname=f:match("([^/\\]+)%.json$")
+            if fname and fname~="index" and fname~="history" and fname~="folders" and not indexed[fname] then
+                local jok,json=pcall(readfile,f)
+                if jok and json and json~="" then
+                    local dok,data=pcall(function() return HttpService:JSONDecode(json) end)
+                    table.insert(synced,{name=fname,itemCount=dok and #(data.Items or {}) or 0,time=dok and (data.Time or 0) or 0,mode="workspace",size=#json})
+                end
+            end
+        end
+    end
+    SaveIndex(synced)
+    return synced
+end
+
+local function SaveBackup(label)
+    local fname=BACKUP_FOLDER.."/backup_"..os.time()..".json"
+    pcall(writefile,fname,HttpService:JSONEncode({Time=os.time(),Label=label}))
+    local ok2,files2=pcall(listfiles,BACKUP_FOLDER)
+    if ok2 then
+        local bfiles={}
+        for _,f in ipairs(files2) do if f:match("backup_%d+%.json$") then table.insert(bfiles,f) end end
+        table.sort(bfiles)
+        while #bfiles>5 do pcall(delfile,bfiles[1]);table.remove(bfiles,1) end
+    end
+end
+
+-- ============================================================
+-- SERIALIZER
+-- ============================================================
+local SUP={Part=true,MeshPart=true,UnionOperation=true,WedgePart=true,CornerWedgePart=true,TrussPart=true,SpawnLocation=true,Model=true,Folder=true,SpecialMesh=true,Script=true,LocalScript=true,ModuleScript=true,StringValue=true,IntValue=true,NumberValue=true,BoolValue=true,Color3Value=true,CFrameValue=true,Vector3Value=true}
+local function sCF(cf) return {cf:GetComponents()} end
+local function dCF(t)  return CFrame.new(table.unpack(t)) end
+local function sC3(c)  return {c.R,c.G,c.B} end
+local function dC3(t)  return Color3.new(t[1],t[2],t[3]) end
+
+local function SrInst(inst,d)
+    d=d or 0
+    if d>60 or not SUP[inst.ClassName] then return nil end
+    local o={ClassName=inst.ClassName,Name=inst.Name,Props={},Children={}}
+    pcall(function()
+        local p={}
+        if inst:IsA("BasePart") then
+            p.Size={inst.Size.X,inst.Size.Y,inst.Size.Z}
+            p.CFrame=sCF(inst.CFrame);p.Color=sC3(inst.Color)
+            p.Material=inst.Material.Name;p.Transparency=inst.Transparency
+            p.Anchored=inst.Anchored;p.CanCollide=inst.CanCollide
+            p.CastShadow=inst.CastShadow;p.Locked=inst.Locked
+        end
+        if inst:IsA("MeshPart") then p.MeshId=inst.MeshId;p.TextureID=inst.TextureID end
+        if inst:IsA("Script") or inst:IsA("LocalScript") or inst:IsA("ModuleScript") then p.Source=inst.Source;p.Disabled=inst.Disabled end
+        for _,vt in ipairs({"StringValue","IntValue","NumberValue","BoolValue"}) do if inst:IsA(vt) then p.Value=inst.Value end end
+        o.Props=p
+    end)
+    for _,ch in ipairs(inst:GetChildren()) do local s=SrInst(ch,d+1);if s then table.insert(o.Children,s) end end
+    return o
+end
+
+local function SrWS()
+    local r={Items={},Time=os.time()}
+    for _,o in ipairs(workspace:GetChildren()) do
+        if o~=workspace.Terrain and o.ClassName~="Camera" then local s=SrInst(o);if s then table.insert(r.Items,s) end end
+    end
+    return HttpService:JSONEncode(r),#r.Items
+end
+
+local SelectedObjects = {}
+
+local function SrSel()
+    if #SelectedObjects==0 then return nil,0,"Selecione objetos primeiro!" end
+    pcall(function() Selection:Set(SelectedObjects) end)
+    local sel=Selection:Get()
+    if #sel==0 then return nil,0,"Selecione objetos primeiro!" end
+    local r={Items={},Time=os.time()}
+    for _,o in ipairs(sel) do local s=SrInst(o);if s then table.insert(r.Items,s) end end
+    return HttpService:JSONEncode(r),#r.Items,nil
+end
+
+local function RsInst(d,parent,offset,scale)
+    local ok,inst=pcall(function() return Instance.new(d.ClassName) end)
+    if not ok then return end
+    inst.Name=d.Name
+    pcall(function()
+        local p=d.Props or {}
+        if inst:IsA("BasePart") then
+            local sc=scale or 1
+            if p.Size   then inst.Size=Vector3.new(p.Size[1]*sc,p.Size[2]*sc,p.Size[3]*sc) end
+            if p.CFrame then
+                local cf=dCF(p.CFrame)
+                if sc~=1 then cf=CFrame.new(cf.Position*sc)*(cf-cf.Position) end
+                if offset then cf=CFrame.new(cf.Position+offset)*(cf-cf.Position) end
+                inst.CFrame=cf
+            end
+            if p.Color  then inst.Color=dC3(p.Color) end
+            if p.Material then pcall(function() inst.Material=Enum.Material[p.Material] end) end
+            if p.Transparency~=nil then inst.Transparency=p.Transparency end
+            inst.Anchored=true
+            inst.CanCollide=p.CanCollide~=nil and p.CanCollide or true
+            if p.Locked~=nil then inst.Locked=p.Locked end
+        end
+        if inst:IsA("MeshPart") then
+            if p.MeshId    then pcall(function() inst.MeshId=p.MeshId end) end
+            if p.TextureID then pcall(function() inst.TextureID=p.TextureID end) end
+        end
+        if p.Source~=nil   then pcall(function() inst.Source=p.Source end) end
+        if p.Disabled~=nil then pcall(function() inst.Disabled=p.Disabled end) end
+        if p.Value~=nil    then pcall(function() inst.Value=p.Value end) end
+    end)
+    for _,ch in ipairs(d.Children or {}) do RsInst(ch,inst,nil,scale) end
+    inst.Parent=parent
+    return inst
+end
+
+local function CollectBaseParts(item,result)
+    result=result or {}
+    if item.Props and item.Props.CFrame then table.insert(result,item) end
+    for _,child in ipairs(item.Children or {}) do CollectBaseParts(child,result) end
+    return result
+end
+
+local function LoadJSONAdvanced(json,clearFirst,targetPos,rotY,scale,onDone)
+    if clearFirst then
+        for _,o in ipairs(workspace:GetChildren()) do
+            if o~=workspace.Terrain and o.ClassName~="Camera" then pcall(function() o:Destroy() end) end
+        end
+    end
+    local ok,data=pcall(function() return HttpService:JSONDecode(json) end)
+    if not ok then if onDone then onDone(false,"JSON inválido") end;return end
+    local sc=scale or 1
+    local offset=nil
+    if targetPos then
+        local allParts={}
+        for _,item in ipairs(data.Items or {}) do CollectBaseParts(item,allParts) end
+        if #allParts>0 then
+            local minY=math.huge;local sumX,sumZ=0,0
+            for _,part in ipairs(allParts) do
+                local cf=dCF(part.Props.CFrame)
+                local halfY=(part.Props.Size and part.Props.Size[2] or 1)*sc/2
+                if cf.Position.Y*sc-halfY<minY then minY=cf.Position.Y*sc-halfY end
+                sumX=sumX+cf.Position.X*sc;sumZ=sumZ+cf.Position.Z*sc
+            end
+            offset=Vector3.new(targetPos.X-sumX/#allParts,targetPos.Y-minY,targetPos.Z-sumZ/#allParts)
+        end
+    end
+    if rotY and rotY~=0 then
+        local rotCF=CFrame.Angles(0,math.rad(rotY),0)
+        local allParts2={}
+        for _,item in ipairs(data.Items or {}) do CollectBaseParts(item,allParts2) end
+        local sumX2,sumZ2=0,0
+        for _,p2 in ipairs(allParts2) do local cf2=dCF(p2.Props.CFrame);sumX2=sumX2+cf2.Position.X;sumZ2=sumZ2+cf2.Position.Z end
+        local cx2=#allParts2>0 and sumX2/#allParts2 or 0
+        local cz2=#allParts2>0 and sumZ2/#allParts2 or 0
+        local function applyRot(item)
+            if item.Props and item.Props.CFrame then
+                local cf=dCF(item.Props.CFrame)
+                local relPos=Vector3.new(cf.Position.X-cx2,0,cf.Position.Z-cz2)
+                local rotated=rotCF*relPos
+                item.Props.CFrame=sCF(CFrame.new(cx2+rotated.X,cf.Position.Y,cz2+rotated.Z)*(rotCF*(cf-cf.Position)))
+            end
+            for _,ch in ipairs(item.Children or {}) do applyRot(ch) end
+        end
+        for _,item in ipairs(data.Items or {}) do applyRot(item) end
+    end
+    local items=data.Items or {};local total=#items;local count=0
+    local function processNext(i)
+        if i>total then if onDone then onDone(true,count) end;return end
+        local bend=math.min(i+BATCH_SIZE-1,total)
+        for j=i,bend do RsInst(items[j],workspace,offset,sc);count=count+1 end
+        task.wait();processNext(bend+1)
+    end
+    task.spawn(function() processNext(1) end)
+end
+
+local function SpawnGrid(json,centerPos,rotY,scale,cols,rows,spacing,onDone)
+    local ok,data=pcall(function() return HttpService:JSONDecode(json) end)
+    if not ok then if onDone then onDone(false,0) end;return end
+    local allParts={}
+    for _,item in ipairs(data.Items or {}) do CollectBaseParts(item,allParts) end
+    local sc=scale or 1
+    local minX,maxX,minZ,maxZ=math.huge,-math.huge,math.huge,-math.huge
+    for _,part in ipairs(allParts) do
+        local cf=dCF(part.Props.CFrame)
+        local sx=(part.Props.Size and part.Props.Size[1] or 1)*sc/2
+        local sz=(part.Props.Size and part.Props.Size[3] or 1)*sc/2
+        if cf.Position.X-sx<minX then minX=cf.Position.X-sx end
+        if cf.Position.X+sx>maxX then maxX=cf.Position.X+sx end
+        if cf.Position.Z-sz<minZ then minZ=cf.Position.Z-sz end
+        if cf.Position.Z+sz>maxZ then maxZ=cf.Position.Z+sz end
+    end
+    local bw=math.max((maxX-minX)*sc,1)+spacing
+    local bd=math.max((maxZ-minZ)*sc,1)+spacing
+    local totalCount=0
+    local function spawnOne(col,row)
+        local ox=(col-(cols-1)/2)*bw
+        local oz=(row-(rows-1)/2)*bd
+        local pos=Vector3.new(centerPos.X+ox,centerPos.Y,centerPos.Z+oz)
+        local jok,dataCopy=pcall(function() return HttpService:JSONDecode(json) end)
+        if not jok then return end
+        local parts2={}
+        for _,item in ipairs(dataCopy.Items or {}) do CollectBaseParts(item,parts2) end
+        local offset2=nil
+        if #parts2>0 then
+            local minY2=math.huge;local sumX2,sumZ2=0,0
+            for _,part in ipairs(parts2) do
+                local cf=dCF(part.Props.CFrame)
+                local halfY=(part.Props.Size and part.Props.Size[2] or 1)*sc/2
+                if cf.Position.Y*sc-halfY<minY2 then minY2=cf.Position.Y*sc-halfY end
+                sumX2=sumX2+cf.Position.X*sc;sumZ2=sumZ2+cf.Position.Z*sc
+            end
+            offset2=Vector3.new(pos.X-sumX2/#parts2,pos.Y-minY2,pos.Z-sumZ2/#parts2)
+        end
+        if rotY and rotY~=0 then
+            local rotCF=CFrame.Angles(0,math.rad(rotY),0)
+            local sumX3,sumZ3=0,0
+            for _,p3 in ipairs(parts2) do local cf3=dCF(p3.Props.CFrame);sumX3=sumX3+cf3.Position.X;sumZ3=sumZ3+cf3.Position.Z end
+            local cx3=#parts2>0 and sumX3/#parts2 or 0
+            local cz3=#parts2>0 and sumZ3/#parts2 or 0
+            local function applyRot2(item)
+                if item.Props and item.Props.CFrame then
+                    local cf=dCF(item.Props.CFrame)
+                    local relPos=Vector3.new(cf.Position.X-cx3,0,cf.Position.Z-cz3)
+                    local rotated=rotCF*relPos
+                    item.Props.CFrame=sCF(CFrame.new(cx3+rotated.X,cf.Position.Y,cz3+rotated.Z)*(rotCF*(cf-cf.Position)))
+                end
+                for _,ch in ipairs(item.Children or {}) do applyRot2(ch) end
+            end
+            for _,item in ipairs(dataCopy.Items or {}) do applyRot2(item) end
+        end
+        for _,item in ipairs(dataCopy.Items or {}) do RsInst(item,workspace,offset2,sc);totalCount=totalCount+1 end
+    end
+    task.spawn(function()
+        for row=0,rows-1 do
+            for col=0,cols-1 do spawnOne(col,row);task.wait() end
+        end
+        if onDone then onDone(true,totalCount) end
+    end)
+end
+
+-- ============================================================
+-- SELEÇÃO POR CLIQUE
+-- ============================================================
+local SelectionBoxes = {}
+local SelectionFolder = Instance.new("Folder")
+SelectionFolder.Name = "_MCLSelBoxes"
+SelectionFolder.Parent = workspace
+
+local function ClearSelection()
+    for _,sb in pairs(SelectionBoxes) do pcall(function() sb:Destroy() end) end
+    SelectionBoxes={}
+    SelectedObjects={}
+    pcall(function() Selection:Set({}) end)
+end
+
+local function GetSelectTarget(obj)
+    local cur=obj
+    while cur and cur.Parent do
+        if cur.Parent==workspace then return cur end
+        cur=cur.Parent
+    end
+    return obj
+end
+
+local function GetAllBaseParts(obj)
+    local parts={}
+    if obj:IsA("BasePart") then table.insert(parts,obj) end
+    for _,d in ipairs(obj:GetDescendants()) do
+        if d:IsA("BasePart") then table.insert(parts,d) end
+    end
+    return parts
+end
+
+local function CreateSelectionBoxFor(obj)
+    local parts=GetAllBaseParts(obj)
+    for _,part in ipairs(parts) do
+        local sb=Instance.new("SelectionBox")
+        sb.Color3=Color3.fromRGB(88,166,255)
+        sb.LineThickness=0.06
+        sb.SurfaceColor3=Color3.fromRGB(88,166,255)
+        sb.SurfaceTransparency=0.85
+        sb.Adornee=part
+        sb.Parent=SelectionFolder
+        table.insert(SelectionBoxes,sb)
+        task.spawn(function()
+            local t=0
+            while sb and sb.Parent do
+                t=t+0.05
+                sb.SurfaceTransparency=0.5+0.35*math.sin(t*4)
+                task.wait(0.03)
+            end
+        end)
+    end
+end
+
+local ClickDownPos=nil
+
+UserInputService.InputBegan:Connect(function(input,gp)
+    if gp then return end
+    if input.UserInputType==Enum.UserInputType.MouseButton1 then
+        ClickDownPos=Vector2.new(input.Position.X,input.Position.Y)
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input,gp)
+    if gp then return end
+    if input.UserInputType~=Enum.UserInputType.MouseButton1 then return end
+    if not ClickDownPos then return end
+    local upPos=Vector2.new(input.Position.X,input.Position.Y)
+    local dist=(upPos-ClickDownPos).Magnitude
+    ClickDownPos=nil
+    if dist>6 then return end
+
+    local guiObjs=LocalPlayer.PlayerGui:GetGuiObjectsAtPosition(input.Position.X,input.Position.Y)
+    for _,g in ipairs(guiObjs) do
+        if g.Name=="MoonCopyLitePro" or g:IsDescendantOf(game:GetService("CoreGui")) then return end
+    end
+
+    if PlacementActive then return end
+
+    local unitRay=Camera:ScreenPointToRay(input.Position.X,input.Position.Y)
+    local rayParams=RaycastParams.new()
+    rayParams.FilterType=Enum.RaycastFilterType.Exclude
+    rayParams.FilterDescendantsInstances={
+        LocalPlayer.Character or Instance.new("Model"),
+        SelectionFolder,
+    }
+    local result=workspace:Raycast(unitRay.Origin,unitRay.Direction*500,rayParams)
+
+    if result and result.Instance then
+        local target=GetSelectTarget(result.Instance)
+        if not target then ClearSelection();return end
+
+        local shift=UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or
+                    UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
+        if not shift then ClearSelection() end
+
+        local alreadyIdx=nil
+        for i,o in ipairs(SelectedObjects) do if o==target then alreadyIdx=i;break end end
+
+        if alreadyIdx then
+            table.remove(SelectedObjects,alreadyIdx)
+            for _,sb in pairs(SelectionBoxes) do pcall(function() sb:Destroy() end) end
+            SelectionBoxes={}
+            for _,o in ipairs(SelectedObjects) do CreateSelectionBoxFor(o) end
+        else
+            table.insert(SelectedObjects,target)
+            CreateSelectionBoxFor(target)
+        end
+
+        pcall(function() Selection:Set(SelectedObjects) end)
+        SetLastAction("Sel: "..target.Name.." ("..#SelectedObjects..")")
+    else
+        ClearSelection()
+        SetLastAction("Seleção limpa.")
+    end
+end)
+
+-- ============================================================
+-- PLACEMENT GHOST
+-- ============================================================
+local PlacementActive=false;local PlacementGhosts={}
+local PlacementFolder=nil;local PlacementConnection=nil
+local PlacementClickConn=nil;local PlacementKeyConn=nil
+local OnPlacementConfirmed=nil;local PlacementData=nil
+local PlacementRotY=0;local LastMousePos=Vector3.new(0,0,0)
+local PlacementScale=1
+
+local function CancelPlacement()
+    PlacementActive=false
+    if PlacementFolder then PlacementFolder:Destroy();PlacementFolder=nil end
+    PlacementGhosts={}
+    if PlacementConnection then PlacementConnection:Disconnect();PlacementConnection=nil end
+    if PlacementClickConn  then PlacementClickConn:Disconnect();PlacementClickConn=nil end
+    if PlacementKeyConn    then PlacementKeyConn:Disconnect();PlacementKeyConn=nil end
+    OnPlacementConfirmed=nil;PlacementData=nil;PlacementRotY=0;PlacementScale=1
+    if CoreGui:FindFirstChild("PlacementHint") then CoreGui:FindFirstChild("PlacementHint"):Destroy() end
+end
+
+local function BuildGhosts(data,rotY,scale)
+    if PlacementFolder then PlacementFolder:Destroy() end
+    PlacementFolder=Instance.new("Model");PlacementFolder.Name="_MCLGhost";PlacementFolder.Parent=workspace
+    PlacementGhosts={}
+    local allParts={}
+    for _,item in ipairs(data.Items or {}) do CollectBaseParts(item,allParts) end
+    local sc=scale or 1
+    local minY=math.huge;local sumX,sumZ=0,0
+    for _,part in ipairs(allParts) do
+        local cf=dCF(part.Props.CFrame)
+        local halfY=(part.Props.Size and part.Props.Size[2] or 1)*sc/2
+        if cf.Position.Y*sc-halfY<minY then minY=cf.Position.Y*sc-halfY end
+        sumX=sumX+cf.Position.X*sc;sumZ=sumZ+cf.Position.Z*sc
+    end
+    local cx=#allParts>0 and sumX/#allParts or 0
+    local cz=#allParts>0 and sumZ/#allParts or 0
+    local rotCF=CFrame.Angles(0,math.rad(rotY),0)
+    for _,part in ipairs(allParts) do
+        local cf=dCF(part.Props.CFrame)
+        local color=part.Props.Color and dC3(part.Props.Color) or Color3.fromRGB(200,200,200)
+        local size=part.Props.Size and Vector3.new(part.Props.Size[1]*sc,part.Props.Size[2]*sc,part.Props.Size[3]*sc) or Vector3.new(1,1,1)
+        local relPos=Vector3.new(cf.Position.X*sc-cx,cf.Position.Y*sc-minY,cf.Position.Z*sc-cz)
+        local relCF=CFrame.new(relPos)*(cf-cf.Position)
+        local rotatedPos=rotCF*relCF.Position
+        local finalRelCF=CFrame.new(rotatedPos)*(rotCF*(cf-cf.Position))
+        local ghost=Instance.new("Part")
+        ghost.Name="_ghost";ghost.Size=size;ghost.Anchored=true
+        ghost.CanCollide=false;ghost.CanTouch=false;ghost.CastShadow=false
+        ghost.Material=Enum.Material.SmoothPlastic
+        ghost.Color=color;ghost.Transparency=0.45
+        ghost.CFrame=finalRelCF;ghost.Parent=PlacementFolder
+        local sel=Instance.new("SelectionBox");sel.Color3=Color3.fromRGB(255,255,255)
+        sel.LineThickness=0.03;sel.SurfaceTransparency=1;sel.Adornee=ghost;sel.Parent=ghost
+        table.insert(PlacementGhosts,{part=ghost,relCF=finalRelCF})
+    end
+    local cp=Instance.new("Part");cp.Name="_center";cp.Size=Vector3.new(0.1,0.1,0.1)
+    cp.Anchored=true;cp.CanCollide=false;cp.Transparency=1;cp.Parent=PlacementFolder
+    local bb=Instance.new("BillboardGui");bb.Size=UDim2.new(0,220,0,50);bb.StudsOffset=Vector3.new(0,5,0)
+    bb.AlwaysOnTop=true;bb.Parent=cp
+    local bbl=Instance.new("TextLabel");bbl.BackgroundTransparency=1;bbl.Size=UDim2.new(1,0,0.5,0)
+    bbl.Text="📍 "..(PlacementData and PlacementData.saveName or "").."  ["..string.format("%.2f",sc).."x]"
+    bbl.TextColor3=Color3.fromRGB(255,255,255);bbl.TextSize=12;bbl.Font=Enum.Font.GothamBold
+    bbl.TextXAlignment=Enum.TextXAlignment.Center;bbl.TextStrokeTransparency=0
+    bbl.TextStrokeColor3=Color3.fromRGB(0,0,0);bbl.Parent=bb
+    local rl=Instance.new("TextLabel");rl.BackgroundTransparency=1;rl.Size=UDim2.new(1,0,0.5,0)
+    rl.Position=UDim2.new(0,0,0.5,0);rl.Text="Q/E = Rotacionar ("..rotY.."°)  •  Click = Confirmar"
+    rl.TextColor3=Color3.fromRGB(180,200,255);rl.TextSize=9;rl.Font=Enum.Font.Gotham
+    rl.TextXAlignment=Enum.TextXAlignment.Center;rl.TextStrokeTransparency=0
+    rl.TextStrokeColor3=Color3.fromRGB(0,0,0);rl.Parent=bb
+    PlacementGhosts.centerPart=cp
+end
+
+local function MoveGhosts(targetPos)
+    if not PlacementFolder then return end
+    for _,g in ipairs(PlacementGhosts) do
+        if type(g)=="table" and g.part then
+            g.part.CFrame=CFrame.new(targetPos.X+g.relCF.Position.X,targetPos.Y+g.relCF.Position.Y,targetPos.Z+g.relCF.Position.Z)*(g.relCF-g.relCF.Position)
+        end
+    end
+    if PlacementGhosts.centerPart then
+        PlacementGhosts.centerPart.CFrame=CFrame.new(targetPos.X,targetPos.Y+2,targetPos.Z)
+    end
+end
+
+local function ShowPlacementHint(saveName)
+    if CoreGui:FindFirstChild("PlacementHint") then CoreGui:FindFirstChild("PlacementHint"):Destroy() end
+    local sg=Instance.new("ScreenGui");sg.Name="PlacementHint"
+    sg.ResetOnSpawn=false;sg.ZIndexBehavior=Enum.ZIndexBehavior.Sibling;sg.Parent=CoreGui
+    local banner=Instance.new("Frame");banner.Size=UDim2.new(0,520,0,56)
+    banner.Position=UDim2.new(0.5,-260,0,-70);banner.BackgroundColor3=Color3.fromRGB(18,28,45)
+    banner.BorderSizePixel=0;banner.ZIndex=10;banner.Parent=sg
+    Instance.new("UICorner",banner).CornerRadius=UDim.new(0,8)
+    local bs=Instance.new("UIStroke");bs.Color=Color3.fromRGB(88,166,255);bs.Thickness=1.5;bs.Parent=banner
+    local bline=Instance.new("Frame");bline.Size=UDim2.new(1,0,0,2)
+    bline.BackgroundColor3=Color3.fromRGB(88,166,255);bline.BorderSizePixel=0;bline.Parent=banner
+    Instance.new("UICorner",bline).CornerRadius=UDim.new(0,8)
+    local bico=Instance.new("TextLabel");bico.BackgroundTransparency=1;bico.Size=UDim2.new(0,28,1,0)
+    bico.Position=UDim2.new(0,10,0,0);bico.Text="📍";bico.TextSize=18;bico.Font=Enum.Font.GothamBold
+    bico.TextColor3=Color3.fromRGB(88,166,255);bico.ZIndex=11;bico.Parent=banner
+    local btxt=Instance.new("TextLabel");btxt.BackgroundTransparency=1;btxt.Size=UDim2.new(1,-110,0,26)
+    btxt.Position=UDim2.new(0,42,0,4);btxt.Text="Posicionando: \""..saveName.."\""
+    btxt.TextSize=12;btxt.Font=Enum.Font.GothamBold;btxt.TextColor3=Color3.fromRGB(218,218,228)
+    btxt.TextXAlignment=Enum.TextXAlignment.Left;btxt.TextTruncate=Enum.TextTruncate.AtEnd;btxt.ZIndex=11;btxt.Parent=banner
+    local bsub=Instance.new("TextLabel");bsub.BackgroundTransparency=1;bsub.Size=UDim2.new(1,-110,0,16)
+    bsub.Position=UDim2.new(0,42,0,32);bsub.Text="Click = confirmar  •  Q/E = rotacionar  •  ESC = cancelar"
+    bsub.TextSize=10;bsub.Font=Enum.Font.Gotham;bsub.TextColor3=Color3.fromRGB(120,150,190)
+    bsub.TextXAlignment=Enum.TextXAlignment.Left;bsub.ZIndex=11;bsub.Parent=banner
+    local bcancel=Instance.new("TextButton");bcancel.Size=UDim2.new(0,84,0,32)
+    bcancel.Position=UDim2.new(1,-92,0.5,-16);bcancel.BackgroundColor3=Color3.fromRGB(50,28,28)
+    bcancel.Text="✕  Cancelar";bcancel.TextSize=10;bcancel.Font=Enum.Font.GothamBold
+    bcancel.TextColor3=Color3.fromRGB(215,65,65);bcancel.BorderSizePixel=0;bcancel.AutoButtonColor=false
+    bcancel.ZIndex=12;bcancel.Parent=banner
+    Instance.new("UICorner",bcancel).CornerRadius=UDim.new(0,6)
+    bcancel.MouseEnter:Connect(function() TweenService:Create(bcancel,TweenInfo.new(0.1),{BackgroundColor3=Color3.fromRGB(80,35,35)}):Play() end)
+    bcancel.MouseLeave:Connect(function() TweenService:Create(bcancel,TweenInfo.new(0.1),{BackgroundColor3=Color3.fromRGB(50,28,28)}):Play() end)
+    bcancel.MouseButton1Click:Connect(function() CancelPlacement() end)
+    TweenService:Create(banner,TweenInfo.new(0.3,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Position=UDim2.new(0.5,-260,0,12)}):Play()
+end
+
+local function StartPlacement(saveName,jsonStr,scale,onConfirmed)
+    CancelPlacement()
+    PlacementActive=true;OnPlacementConfirmed=onConfirmed;PlacementRotY=0;PlacementScale=scale or 1
+    local ok,data=pcall(function() return HttpService:JSONDecode(jsonStr) end)
+    if not ok then if onConfirmed then onConfirmed(nil,nil,0,1) end;return end
+    PlacementData={saveName=saveName,data=data,jsonStr=jsonStr}
+    BuildGhosts(data,0,PlacementScale);ShowPlacementHint(saveName)
+    PlacementConnection=RunService.RenderStepped:Connect(function()
+        if not PlacementActive or not PlacementFolder then return end
+        local unitRay=Camera:ScreenPointToRay(Mouse.X,Mouse.Y)
+        local rayParams=RaycastParams.new()
+        rayParams.FilterType=Enum.RaycastFilterType.Exclude
+        rayParams.FilterDescendantsInstances={LocalPlayer.Character or Instance.new("Model"),PlacementFolder}
+        local result=workspace:Raycast(unitRay.Origin,unitRay.Direction*1000,rayParams)
+        if result then LastMousePos=result.Position;MoveGhosts(result.Position) end
+    end)
+    PlacementClickConn=Mouse.Button1Down:Connect(function()
+        if not PlacementActive or not PlacementFolder then return end
+        for _,g in ipairs(PlacementGhosts) do
+            if type(g)=="table" and g.part then
+                TweenService:Create(g.part,TweenInfo.new(0.15),{Color=Color3.fromRGB(255,255,255),Transparency=0.1}):Play()
+            end
+        end
+        local pos=LastMousePos;local rotY=PlacementRotY;local sc=PlacementScale
+        local js=PlacementData and PlacementData.jsonStr or nil
+        local cb=OnPlacementConfirmed
+        task.delay(0.2,function() CancelPlacement() end)
+        if cb and js then cb(js,pos,rotY,sc) end
+    end)
+    PlacementKeyConn=UserInputService.InputBegan:Connect(function(input,gp)
+        if gp then return end
+        if input.KeyCode==Enum.KeyCode.Escape then CancelPlacement()
+        elseif input.KeyCode==Enum.KeyCode.Q then
+            PlacementRotY=PlacementRotY+45
+            if PlacementData then BuildGhosts(PlacementData.data,PlacementRotY,PlacementScale);MoveGhosts(LastMousePos) end
+        elseif input.KeyCode==Enum.KeyCode.E then
+            PlacementRotY=PlacementRotY-45
+            if PlacementData then BuildGhosts(PlacementData.data,PlacementRotY,PlacementScale);MoveGhosts(LastMousePos) end
+        end
+    end)
+end
+
+-- ============================================================
+-- PALETA
+-- ============================================================
+local C={
+    BG         = Color3.fromRGB(12,12,16),
+    Panel      = Color3.fromRGB(18,18,24),
+    Header     = Color3.fromRGB(16,16,22),
+    Card       = Color3.fromRGB(22,22,30),
+    Border     = Color3.fromRGB(36,36,50),
+    BorderHi   = Color3.fromRGB(55,55,75),
+    Accent     = Color3.fromRGB(95,175,255),
+    AccentHov  = Color3.fromRGB(130,200,255),
+    AccentDim  = Color3.fromRGB(40,90,160),
+    Text       = Color3.fromRGB(222,222,235),
+    TextDim    = Color3.fromRGB(130,130,158),
+    TextDark   = Color3.fromRGB(65,65,88),
+    Success    = Color3.fromRGB(68,198,108),
+    Warning    = Color3.fromRGB(255,185,55),
+    Danger     = Color3.fromRGB(218,68,68),
+    Row        = Color3.fromRGB(22,22,30),
+    RowHov     = Color3.fromRGB(30,30,42),
+    Scrollbar  = Color3.fromRGB(45,45,65),
+    File       = Color3.fromRGB(68,198,108),
+    Purple     = Color3.fromRGB(158,98,255),
+    Gold       = Color3.fromRGB(255,200,55),
+    ProBG      = Color3.fromRGB(24,20,8),
+    TabAct     = Color3.fromRGB(22,22,30),
+    TabInact   = Color3.fromRGB(12,12,16),
+}
+
+-- ============================================================
+-- GUI ROOT
+-- ============================================================
+if CoreGui:FindFirstChild("MoonCopyLitePro") then CoreGui:FindFirstChild("MoonCopyLitePro"):Destroy() end
+local Root=Instance.new("ScreenGui")
+Root.Name="MoonCopyLitePro"
+Root.ResetOnSpawn=false
+Root.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
+Root.Parent=CoreGui
+
+local function Crn(p,r)
+    local c=Instance.new("UICorner");c.CornerRadius=UDim.new(0,r or 6);c.Parent=p;return c
+end
+local function Stk(p,col,t)
+    local s=Instance.new("UIStroke");s.Color=col or C.Border;s.Thickness=t or 1;s.Parent=p;return s
+end
+local function Lbl(p,txt,sz,col,fnt,xa)
+    local l=Instance.new("TextLabel");l.BackgroundTransparency=1;l.Text=txt or ""
+    l.TextSize=sz or 12;l.TextColor3=col or C.Text;l.Font=fnt or Enum.Font.Gotham
+    l.TextXAlignment=xa or Enum.TextXAlignment.Left;l.TextTruncate=Enum.TextTruncate.AtEnd;l.Parent=p;return l
+end
+local function TBtn(p,txt,sz,bg,tc)
+    local b=Instance.new("TextButton");b.BackgroundColor3=bg or C.Row;b.Text=txt or ""
+    b.TextSize=sz or 12;b.TextColor3=tc or C.Text;b.Font=Enum.Font.GothamBold
+    b.BorderSizePixel=0;b.AutoButtonColor=false;b.Parent=p;Crn(b,6);return b
+end
+local function Hov(b,n,h)
+    b.MouseEnter:Connect(function() TweenService:Create(b,TweenInfo.new(0.12),{BackgroundColor3=h}):Play() end)
+    b.MouseLeave:Connect(function() TweenService:Create(b,TweenInfo.new(0.12),{BackgroundColor3=n}):Play() end)
+end
+local function Sec(parent,txt)
+    local f=Instance.new("Frame");f.Size=UDim2.new(1,0,0,22);f.BackgroundTransparency=1;f.Parent=parent
+    local line=Instance.new("Frame");line.Size=UDim2.new(1,0,0,1);line.Position=UDim2.new(0,0,0.5,0);line.BackgroundColor3=C.Border;line.BorderSizePixel=0;line.Parent=f
+    local bg=Instance.new("Frame");bg.BackgroundColor3=C.BG;bg.BorderSizePixel=0;bg.Size=UDim2.new(0,#txt*7+18,0,16);bg.Position=UDim2.new(0,8,0.5,-8);bg.Parent=f
+    local lbl=Lbl(bg,txt,9,C.AccentDim,Enum.Font.GothamBold,Enum.TextXAlignment.Center);lbl.Size=UDim2.new(1,0,1,0)
+end
+local function MkScroll(parent)
+    local s=Instance.new("ScrollingFrame");s.Size=UDim2.new(1,0,1,0);s.BackgroundTransparency=1
+    s.BorderSizePixel=0;s.ScrollBarThickness=3;s.ScrollBarImageColor3=C.Scrollbar
+    s.CanvasSize=UDim2.new(0,0,0,0);s.AutomaticCanvasSize=Enum.AutomaticSize.Y;s.Parent=parent;return s
+end
+local function FormatTime(t)
+    if not t or t==0 then return "?" end
+    local d=os.time()-t
+    if d<60 then return d.."s" elseif d<3600 then return math.floor(d/60).."min"
+    elseif d<86400 then return math.floor(d/3600).."h" else return math.floor(d/86400).."d" end
+end
+local function FormatSize(b)
+    if not b then return "?" end
+    if b<1024 then return b.."B" elseif b<1048576 then return string.format("%.1fKB",b/1024)
+    else return string.format("%.1fMB",b/1048576) end
+end
+
+local StatusLbl
+
+local function Notify(msg,col)
+    col=col or C.Accent;SetLastAction(msg)
+    for _,c in ipairs(Root:GetChildren()) do if c.Name=="_N" then c:Destroy() end end
+    local f=Instance.new("Frame");f.Name="_N";f.Size=UDim2.new(0,360,0,42)
+    f.Position=UDim2.new(0.5,-180,1,20);f.BackgroundColor3=C.Panel;f.BorderSizePixel=0;f.ZIndex=50;f.Parent=Root;Crn(f,8)
+    local bar=Instance.new("Frame");bar.Size=UDim2.new(0,3,1,-12);bar.Position=UDim2.new(0,8,0.5,0)
+    bar.AnchorPoint=Vector2.new(0,0.5);bar.BackgroundColor3=col;bar.BorderSizePixel=0;bar.ZIndex=51;bar.Parent=f;Crn(bar,2)
+    Stk(f,col,1)
+    local l=Lbl(f,msg,11,C.Text,Enum.Font.Gotham);l.Size=UDim2.new(1,-30,1,0);l.Position=UDim2.new(0,20,0,0);l.ZIndex=51
+    TweenService:Create(f,TweenInfo.new(0.35,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Position=UDim2.new(0.5,-180,1,-56)}):Play()
+    task.delay(3.5,function()
+        TweenService:Create(f,TweenInfo.new(0.22),{Position=UDim2.new(0.5,-180,1,20)}):Play()
+        task.delay(0.25,function() if f and f.Parent then f:Destroy() end end)
+    end)
+end
+
+local function CloseModal()
+    for _,c in ipairs(Root:GetChildren()) do if c.Name=="_modal" or c.Name=="_ov" then c:Destroy() end end
+end
+
+-- ============================================================
+-- JANELA PRINCIPAL
+-- ============================================================
+local W,H=470,620
+local Win=Instance.new("Frame")
+Win.Name="Win";Win.Size=UDim2.new(0,W,0,H);Win.Position=UDim2.new(0.5,-W/2,0.5,-H/2)
+Win.BackgroundColor3=C.BG;Win.BorderSizePixel=0;Win.ClipsDescendants=true;Win.Parent=Root
+Crn(Win,10);Stk(Win,C.Border,1)
+
+local Shadow=Instance.new("ImageLabel")
+Shadow.Size=UDim2.new(1,60,1,60);Shadow.Position=UDim2.new(0,-30,0,-20);Shadow.BackgroundTransparency=1
+Shadow.Image="rbxassetid://6014261993";Shadow.ImageColor3=Color3.new(0,0,0);Shadow.ImageTransparency=0.6
+Shadow.ScaleType=Enum.ScaleType.Slice;Shadow.SliceCenter=Rect.new(49,49,450,450);Shadow.ZIndex=0;Shadow.Parent=Win
+
+local Header=Instance.new("Frame")
+Header.Size=UDim2.new(1,0,0,46);Header.BackgroundColor3=C.Header;Header.BorderSizePixel=0;Header.Parent=Win
+
+local TL=Instance.new("Frame");TL.Size=UDim2.new(1,0,0,2);TL.BackgroundColor3=C.Accent;TL.BorderSizePixel=0;TL.Parent=Header
+local HLine=Instance.new("Frame");HLine.Size=UDim2.new(1,0,0,1);HLine.Position=UDim2.new(0,0,1,-1);HLine.BackgroundColor3=C.Border;HLine.BorderSizePixel=0;HLine.Parent=Header
+
+local MIco=Lbl(Header,"🌙",16,C.Accent,Enum.Font.GothamBold,Enum.TextXAlignment.Center)
+MIco.Size=UDim2.new(0,28,1,0);MIco.Position=UDim2.new(0,12,0,0)
+
+local TTl=Lbl(Header,"Moon Copy Lite",13,C.Text,Enum.Font.GothamBold)
+TTl.Size=UDim2.new(0,145,0,18);TTl.Position=UDim2.new(0,44,0.5,-9)
+
+local TVer=Lbl(Header,"v3.5",9,C.TextDim,Enum.Font.Gotham)
+TVer.Size=UDim2.new(0,30,0,14);TVer.Position=UDim2.new(0,44,0.5,9)
+
+local PlanBadge=Instance.new("Frame");PlanBadge.Size=UDim2.new(0,50,0,20);PlanBadge.Position=UDim2.new(0,195,0.5,-10)
+PlanBadge.BackgroundColor3=C.Row;PlanBadge.BorderSizePixel=0;PlanBadge.Parent=Header;Crn(PlanBadge,10);Stk(PlanBadge,C.Border,1)
+local PlanLbl=Lbl(PlanBadge,"FREE",9,C.TextDim,Enum.Font.GothamBold,Enum.TextXAlignment.Center);PlanLbl.Size=UDim2.new(1,0,1,0)
+
+local BClose=TBtn(Header,"✕",10,Color3.fromRGB(40,40,52),C.TextDim)
+BClose.Size=UDim2.new(0,28,0,24);BClose.Position=UDim2.new(1,-36,0.5,-12)
+Hov(BClose,Color3.fromRGB(40,40,52),C.Danger)
+BClose.MouseButton1Click:Connect(function() CancelPlacement();ClearSelection();SelectionFolder:Destroy();Root:Destroy() end)
+
+local BMin=TBtn(Header,"–",14,Color3.fromRGB(40,40,52),C.TextDim)
+BMin.Size=UDim2.new(0,28,0,24);BMin.Position=UDim2.new(1,-68,0.5,-12)
+Hov(BMin,Color3.fromRGB(40,40,52),C.Warning)
+local mini=false
+BMin.MouseButton1Click:Connect(function()
+    mini=not mini
+    TweenService:Create(Win,TweenInfo.new(0.2,Enum.EasingStyle.Quad),{Size=mini and UDim2.new(0,W,0,46) or UDim2.new(0,W,0,H)}):Play()
+    BMin.Text=mini and "□" or "–"
+end)
+
+do
+    local dragging,dx,dy=false,0,0
+    Header.InputBegan:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+            dragging=true;local mp=UserInputService:GetMouseLocation();local wp=Win.AbsolutePosition
+            dx=mp.X-wp.X;dy=mp.Y-wp.Y
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then dragging=false end
+    end)
+    RunService.RenderStepped:Connect(function()
+        if not dragging then return end
+        local mp=UserInputService:GetMouseLocation();local ss=Camera.ViewportSize
+        Win.Position=UDim2.new(0,math.clamp(mp.X-dx,0,ss.X-Win.AbsoluteSize.X),0,math.clamp(mp.Y-dy,0,ss.Y-Win.AbsoluteSize.Y))
+    end)
+end
+
+local TabBar=Instance.new("ScrollingFrame")
+TabBar.Size=UDim2.new(1,0,0,36);TabBar.Position=UDim2.new(0,0,0,46);TabBar.BackgroundColor3=C.BG
+TabBar.BorderSizePixel=0;TabBar.ScrollBarThickness=0;TabBar.ScrollingDirection=Enum.ScrollingDirection.X
+TabBar.AutomaticCanvasSize=Enum.AutomaticSize.X;TabBar.CanvasSize=UDim2.new(0,0,0,0)
+TabBar.ElasticBehavior=Enum.ElasticBehavior.Never;TabBar.ClipsDescendants=true;TabBar.Parent=Win
+
+local TabBarLine=Instance.new("Frame");TabBarLine.Size=UDim2.new(1,0,0,1);TabBarLine.Position=UDim2.new(0,0,1,-1)
+TabBarLine.BackgroundColor3=C.Border;TabBarLine.BorderSizePixel=0;TabBarLine.Parent=TabBar
+
+local TabLayout=Instance.new("UIListLayout");TabLayout.FillDirection=Enum.FillDirection.Horizontal
+TabLayout.HorizontalAlignment=Enum.HorizontalAlignment.Left;TabLayout.VerticalAlignment=Enum.VerticalAlignment.Center
+TabLayout.SortOrder=Enum.SortOrder.LayoutOrder;TabLayout.Parent=TabBar
+
+local ShortBar=Instance.new("ScrollingFrame")
+ShortBar.Size=UDim2.new(1,0,0,30);ShortBar.Position=UDim2.new(0,0,0,82);ShortBar.BackgroundColor3=Color3.fromRGB(16,16,22)
+ShortBar.BorderSizePixel=0;ShortBar.ScrollBarThickness=0;ShortBar.ScrollingDirection=Enum.ScrollingDirection.X
+ShortBar.AutomaticCanvasSize=Enum.AutomaticSize.X;ShortBar.CanvasSize=UDim2.new(0,0,0,0)
+ShortBar.ElasticBehavior=Enum.ElasticBehavior.Always;ShortBar.ClipsDescendants=true;ShortBar.ZIndex=3;ShortBar.Parent=Win
+
+local ShortLine=Instance.new("Frame");ShortLine.Size=UDim2.new(1,0,0,1);ShortLine.Position=UDim2.new(0,0,1,-1)
+ShortLine.BackgroundColor3=C.Border;ShortLine.BorderSizePixel=0;ShortLine.ZIndex=4;ShortLine.Parent=ShortBar
+
+local ShortLayout=Instance.new("UIListLayout");ShortLayout.FillDirection=Enum.FillDirection.Horizontal
+ShortLayout.SortOrder=Enum.SortOrder.LayoutOrder;ShortLayout.Padding=UDim.new(0,3)
+ShortLayout.VerticalAlignment=Enum.VerticalAlignment.Center;ShortLayout.Parent=ShortBar
+
+local ShortPad=Instance.new("UIPadding");ShortPad.PaddingLeft=UDim.new(0,6);ShortPad.PaddingRight=UDim.new(0,6)
+ShortPad.PaddingTop=UDim.new(0,4);ShortPad.PaddingBottom=UDim.new(0,4);ShortPad.Parent=ShortBar
+
+do
+    local sdrag,sdx,sdc=false,0,0
+    ShortBar.InputBegan:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1 then sdrag=true;sdx=i.Position.X;sdc=ShortBar.CanvasPosition.X end
+    end)
+    UserInputService.InputChanged:Connect(function(i)
+        if sdrag and i.UserInputType==Enum.UserInputType.MouseMovement then
+            local max=math.max(0,ShortBar.AbsoluteCanvasSize.X-ShortBar.AbsoluteSize.X)
+            ShortBar.CanvasPosition=Vector2.new(math.clamp(sdc+(sdx-i.Position.X),0,max),0)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1 then sdrag=false end
+    end)
+end
+
+local CA=Instance.new("Frame");CA.Size=UDim2.new(1,0,1,-138);CA.Position=UDim2.new(0,0,0,112)
+CA.BackgroundTransparency=1;CA.ClipsDescendants=true;CA.Parent=Win
+
+local StatusBar=Instance.new("Frame");StatusBar.Size=UDim2.new(1,0,0,26);StatusBar.Position=UDim2.new(0,0,1,-26)
+StatusBar.BackgroundColor3=Color3.fromRGB(10,10,14);StatusBar.BorderSizePixel=0;StatusBar.ZIndex=2;StatusBar.Parent=Win
+
+local SBLine=Instance.new("Frame");SBLine.Size=UDim2.new(1,0,0,1);SBLine.BackgroundColor3=C.Border
+SBLine.BorderSizePixel=0;SBLine.ZIndex=3;SBLine.Parent=StatusBar
+
+StatusLbl=Lbl(StatusBar,"Pronto.",10,C.TextDark,Enum.Font.Gotham)
+StatusLbl.Size=UDim2.new(0.58,0,1,0);StatusLbl.Position=UDim2.new(0,12,0,0);StatusLbl.ZIndex=3
+
+local WsCntLbl=Lbl(StatusBar,"",10,C.TextDark,Enum.Font.Gotham,Enum.TextXAlignment.Right)
+WsCntLbl.Size=UDim2.new(0.42,-10,1,0);WsCntLbl.Position=UDim2.new(0.58,0,0,0);WsCntLbl.ZIndex=3
+
+RunService.Heartbeat:Connect(function()
+    local c=0
+    for _,o in ipairs(workspace:GetChildren()) do
+        if o~=workspace.Terrain and o.ClassName~="Camera" then c=c+1 end
+    end
+    WsCntLbl.Text="ws:"..c.."  sel:"..#SelectedObjects.."  ";StatusLbl.Text=LastAction
+end)
+
+local TPages,TBtns={},{}
+
+local function MkTab(name,icon,w)
+    w=w or 95
+    local btn=Instance.new("TextButton");btn.Size=UDim2.new(0,w,1,0);btn.BackgroundColor3=C.TabInact
+    btn.Text=(icon and icon.."  " or "")..name;btn.TextSize=10;btn.TextColor3=C.TextDark
+    btn.Font=Enum.Font.GothamBold;btn.BorderSizePixel=0;btn.AutoButtonColor=false
+    btn.LayoutOrder=#TBtns+1;btn.Parent=TabBar
+    local ind=Instance.new("Frame");ind.Size=UDim2.new(1,0,0,2);ind.Position=UDim2.new(0,0,1,-2)
+    ind.BackgroundColor3=C.Accent;ind.BorderSizePixel=0;ind.Visible=false;ind.Parent=btn
+    local sep=Instance.new("Frame");sep.Size=UDim2.new(0,1,0.6,0);sep.Position=UDim2.new(1,-1,0.2,0)
+    sep.BackgroundColor3=C.Border;sep.BorderSizePixel=0;sep.Parent=btn
+    local page=Instance.new("Frame");page.Size=UDim2.new(1,0,1,0);page.BackgroundTransparency=1
+    page.Visible=false;page.Parent=CA
+    TPages[name]=page;TBtns[name]={btn=btn,ind=ind}
+    btn.MouseButton1Click:Connect(function()
+        for n,pg in pairs(TPages) do pg.Visible=false;TBtns[n].btn.TextColor3=C.TextDark;TBtns[n].btn.BackgroundColor3=C.TabInact;TBtns[n].ind.Visible=false end
+        page.Visible=true;btn.TextColor3=C.AccentHov;btn.BackgroundColor3=C.TabAct;ind.Visible=true
+    end)
+    return page
+end
+
+local function SetTab(name)
+    for n,pg in pairs(TPages) do pg.Visible=false;TBtns[n].btn.TextColor3=C.TextDark;TBtns[n].btn.BackgroundColor3=C.TabInact;TBtns[n].ind.Visible=false end
+    if TPages[name] then TPages[name].Visible=true;TBtns[name].btn.TextColor3=C.AccentHov;TBtns[name].btn.BackgroundColor3=C.TabAct;TBtns[name].ind.Visible=true end
+end
+
+local SHORTCUTS={
+    {label="📖 Tutorial", bg=Color3.fromRGB(20,30,48),hov=Color3.fromRGB(28,42,68),tc=C.Accent, fn=function() OpenTutFrame() end},
+    {label="⭐ Pro",      bg=C.ProBG,hov=Color3.fromRGB(45,38,16),tc=C.Gold,
+     fn=function() if IsPro() then Notify("⭐  Clique 2x no botão Pro para desativar.",C.Gold);return end;SetTab("Copiar");task.delay(0.1,function() OpenProFrame() end) end},
+    {label="◈ Salvados", bg=C.AccentDim,hov=Color3.fromRGB(55,115,200),tc=C.Text, fn=function() RebuildSaved();SetTab("Salvados") end},
+    {label="⎘ Copiar",   bg=C.Row,hov=C.RowHov,tc=C.TextDim, fn=function() SetTab("Copiar") end},
+    {label="↻ Sync",     bg=C.Row,hov=C.RowHov,tc=C.TextDim, fn=function() SyncIndex();RebuildSaved();Notify("↻  Sincronizado!",C.Success) end},
+    {label="🔒 Ancorar", bg=Color3.fromRGB(24,22,40),hov=Color3.fromRGB(35,30,58),tc=C.Purple,
+     fn=function() local cnt=0;for _,o in ipairs(workspace:GetDescendants()) do if o:IsA("BasePart") then o.Anchored=true;cnt=cnt+1 end end;Notify("🔒  "..cnt.." partes ancoradas.",C.Purple) end},
+    {label="✕ Seleção",  bg=Color3.fromRGB(20,24,38),hov=Color3.fromRGB(28,34,52),tc=C.TextDim, fn=function() ClearSelection();Notify("✕  Seleção limpa.",C.TextDim) end},
+    {label="🗑 Limpar WS",bg=Color3.fromRGB(38,20,20),hov=Color3.fromRGB(55,28,28),tc=C.Danger,
+     fn=function() SaveBackup("manual");for _,o in ipairs(workspace:GetChildren()) do if o~=workspace.Terrain and o.ClassName~="Camera" then pcall(function() o:Destroy() end) end end;Notify("🗑  Workspace limpo.",C.Warning) end},
+}
+
+for i,sh in ipairs(SHORTCUTS) do
+    local btn=Instance.new("TextButton");btn.Size=UDim2.new(0,0,1,0);btn.AutomaticSize=Enum.AutomaticSize.X
+    btn.BackgroundColor3=sh.bg;btn.Text="  "..sh.label.."  ";btn.TextSize=9;btn.TextColor3=sh.tc
+    btn.Font=Enum.Font.GothamBold;btn.BorderSizePixel=0;btn.AutoButtonColor=false;btn.LayoutOrder=i;btn.ZIndex=4;btn.Parent=ShortBar;Crn(btn,4)
+    local capSh=sh
+    btn.MouseEnter:Connect(function() TweenService:Create(btn,TweenInfo.new(0.1),{BackgroundColor3=capSh.hov}):Play() end)
+    btn.MouseLeave:Connect(function() TweenService:Create(btn,TweenInfo.new(0.1),{BackgroundColor3=capSh.bg}):Play() end)
+    btn.MouseButton1Click:Connect(function() capSh.fn() end)
+end
+
+-- ============================================================
+-- FRAME PRO
+-- ============================================================
+local ProFrame=Instance.new("Frame");ProFrame.Name="ProFrame";ProFrame.Size=UDim2.new(1,0,1,0)
+ProFrame.Position=UDim2.new(0,0,1,0);ProFrame.BackgroundColor3=C.BG;ProFrame.BorderSizePixel=0
+ProFrame.ZIndex=20;ProFrame.Visible=false;ProFrame.Parent=Win;Crn(ProFrame,10)
+
+local ProTopLine=Instance.new("Frame");ProTopLine.Size=UDim2.new(1,0,0,3);ProTopLine.BackgroundColor3=C.Gold
+ProTopLine.BorderSizePixel=0;ProTopLine.ZIndex=21;ProTopLine.Parent=ProFrame
+
+local ProCloseBtn=TBtn(ProFrame,"✕",10,Color3.fromRGB(38,32,14),C.Gold)
+ProCloseBtn.Size=UDim2.new(0,28,0,24);ProCloseBtn.Position=UDim2.new(1,-36,0,10);ProCloseBtn.ZIndex=22
+Hov(ProCloseBtn,Color3.fromRGB(38,32,14),Color3.fromRGB(60,50,20))
+
+local ProStar=Lbl(ProFrame,"⭐",40,C.Gold,Enum.Font.GothamBold,Enum.TextXAlignment.Center)
+ProStar.Size=UDim2.new(1,0,0,54);ProStar.Position=UDim2.new(0,0,0,18);ProStar.ZIndex=21
+
+local ProTitle=Lbl(ProFrame,"Moon Copy Lite PRO",18,C.Gold,Enum.Font.GothamBold,Enum.TextXAlignment.Center)
+ProTitle.Size=UDim2.new(1,0,0,26);ProTitle.Position=UDim2.new(0,0,0,74);ProTitle.ZIndex=21
+
+local ProDesc=Lbl(ProFrame,"Ative o Pro com a Key de acesso.\nO Pro será permanente – nunca precisará ativar novamente!",11,C.TextDim,Enum.Font.Gotham,Enum.TextXAlignment.Center)
+ProDesc.Size=UDim2.new(1,-24,0,38);ProDesc.Position=UDim2.new(0,12,0,106);ProDesc.TextWrapped=true;ProDesc.ZIndex=21
+
+local ProFeats=Instance.new("Frame");ProFeats.Size=UDim2.new(1,-24,0,126);ProFeats.Position=UDim2.new(0,12,0,150)
+ProFeats.BackgroundColor3=C.ProBG;ProFeats.BorderSizePixel=0;ProFeats.ZIndex=21;ProFeats.Parent=ProFrame;Crn(ProFeats,8);Stk(ProFeats,C.Gold,1)
+
+local featsList={"⭐  Saves ilimitados","📐  Spawn em grade configurável","🔭  Escala antes de spawnar","⭐  Favoritar saves","🏷  Tags coloridas","📁  Pastas/categorias"}
+for i,feat in ipairs(featsList) do
+    local fl=Lbl(ProFeats,feat,10,Color3.fromRGB(215,195,130),Enum.Font.Gotham)
+    fl.Size=UDim2.new(1,-16,0,20);fl.Position=UDim2.new(0,10,0,(i-1)*20+3);fl.ZIndex=22
+end
+
+local ProKeyFrame=Instance.new("Frame");ProKeyFrame.Size=UDim2.new(1,-24,0,38);ProKeyFrame.Position=UDim2.new(0,12,0,284)
+ProKeyFrame.BackgroundColor3=C.Row;ProKeyFrame.BorderSizePixel=0;ProKeyFrame.ZIndex=21;ProKeyFrame.Parent=ProFrame;Crn(ProKeyFrame,8);Stk(ProKeyFrame,C.Gold,1)
+
+local ProKeyInput=Instance.new("TextBox");ProKeyInput.Size=UDim2.new(1,-18,1,0);ProKeyInput.Position=UDim2.new(0,12,0,0)
+ProKeyInput.BackgroundTransparency=1;ProKeyInput.Text="";ProKeyInput.PlaceholderText="Digite sua chave Pro aqui..."
+ProKeyInput.PlaceholderColor3=C.TextDark;ProKeyInput.TextColor3=C.Text;ProKeyInput.TextSize=11
+ProKeyInput.Font=Enum.Font.Gotham;ProKeyInput.TextXAlignment=Enum.TextXAlignment.Left
+ProKeyInput.ClearTextOnFocus=false;ProKeyInput.ZIndex=22;ProKeyInput.Parent=ProKeyFrame
+ProKeyInput.Focused:Connect(function() Stk(ProKeyFrame,C.Gold,2) end)
+ProKeyInput.FocusLost:Connect(function() Stk(ProKeyFrame,C.Gold,1) end)
+
+local ProActivateBtn=TBtn(ProFrame,"🔑  Ativar Pro Permanente",12,C.Gold,Color3.fromRGB(14,11,0))
+ProActivateBtn.Size=UDim2.new(1,-24,0,44);ProActivateBtn.Position=UDim2.new(0,12,0,332);ProActivateBtn.ZIndex=22
+Hov(ProActivateBtn,C.Gold,Color3.fromRGB(255,215,80))
+
+local ProFooter=Lbl(ProFrame,"🔒  Chave salva localmente – automático nas próximas vezes",9,C.TextDark,Enum.Font.Gotham,Enum.TextXAlignment.Center)
+ProFooter.Size=UDim2.new(1,-24,0,14);ProFooter.Position=UDim2.new(0,12,1,-22);ProFooter.ZIndex=21
+
+local proOpen=false
+local function OpenProFrame()
+    if proOpen then return end
+    proOpen=true;ProFrame.Visible=true;ProFrame.Position=UDim2.new(0,0,1,0)
+    TweenService:Create(ProFrame,TweenInfo.new(0.3,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Position=UDim2.new(0,0,0,0)}):Play()
+end
+local function CloseProFrame()
+    if not proOpen then return end
+    TweenService:Create(ProFrame,TweenInfo.new(0.22,Enum.EasingStyle.Quad),{Position=UDim2.new(0,0,1,0)}):Play()
+    task.delay(0.25,function() ProFrame.Visible=false;proOpen=false end)
+end
+ProCloseBtn.MouseButton1Click:Connect(CloseProFrame)
+
+local ApplyProVisual
+local ResetToFreeVisual
+local RebuildSaved
+local RebuildFolderBar
+
+ProActivateBtn.MouseButton1Click:Connect(function()
+    local key=ProKeyInput.Text:match("^%s*(.-)%s*$")
+    if key=="" then Notify("❌  Digite a chave!",C.Warning);return end
+    if CheckKey(key) then
+        License.active=true;License.key=key;License.plan="pro"
+        SaveKeyLocal(key);ApplyProVisual();ProKeyInput.Text=""
+        ProActivateBtn.Text="✔  Pro Ativado!";ProActivateBtn.BackgroundColor3=C.Success;ProActivateBtn.TextColor3=Color3.fromRGB(8,18,8)
+        ProTitle.Text="⭐  Pro Ativo!";ProDesc.Text="Seu Pro está ativo permanentemente!";ProDesc.TextColor3=C.File
+        Notify("⭐  Pro ativado com sucesso!",C.Gold);SetLastAction("Pro ativado!")
+        task.delay(1.5,CloseProFrame);RebuildSaved();RebuildFolderBar()
+    else
+        Notify("❌  Chave inválida!",C.Danger)
+        TweenService:Create(ProKeyFrame,TweenInfo.new(0.08),{BackgroundColor3=Color3.fromRGB(55,18,18)}):Play()
+        task.delay(0.22,function() TweenService:Create(ProKeyFrame,TweenInfo.new(0.08),{BackgroundColor3=C.Row}):Play() end)
+    end
+end)
+
+-- ============================================================
+-- TUTORIAL FRAME
+-- ============================================================
+local TutFrame=Instance.new("Frame");TutFrame.Name="TutFrame";TutFrame.Size=UDim2.new(1,0,1,0)
+TutFrame.Position=UDim2.new(0,0,1,0);TutFrame.BackgroundColor3=C.BG;TutFrame.BorderSizePixel=0
+TutFrame.ZIndex=25;TutFrame.Visible=false;TutFrame.Parent=Win;Crn(TutFrame,10)
+
+local TutTopLine=Instance.new("Frame");TutTopLine.Size=UDim2.new(1,0,0,3);TutTopLine.BackgroundColor3=C.Accent
+TutTopLine.BorderSizePixel=0;TutTopLine.ZIndex=26;TutTopLine.Parent=TutFrame
+
+local TutCloseBtn=TBtn(TutFrame,"✕",10,Color3.fromRGB(18,28,48),C.Accent)
+TutCloseBtn.Size=UDim2.new(0,28,0,24);TutCloseBtn.Position=UDim2.new(1,-36,0,10);TutCloseBtn.ZIndex=27
+Hov(TutCloseBtn,Color3.fromRGB(18,28,48),Color3.fromRGB(28,44,72))
+
+local tutOpen=false
+local function OpenTutFrame()
+    if tutOpen then return end
+    tutOpen=true;TutFrame.Visible=true;TutFrame.Position=UDim2.new(0,0,1,0)
+    TweenService:Create(TutFrame,TweenInfo.new(0.3,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Position=UDim2.new(0,0,0,0)}):Play()
+end
+local function CloseTutFrame()
+    if not tutOpen then return end
+    TweenService:Create(TutFrame,TweenInfo.new(0.22,Enum.EasingStyle.Quad),{Position=UDim2.new(0,0,1,0)}):Play()
+    task.delay(0.25,function() TutFrame.Visible=false;tutOpen=false end)
+end
+TutCloseBtn.MouseButton1Click:Connect(CloseTutFrame)
+
+local TutScroll=Instance.new("ScrollingFrame");TutScroll.Size=UDim2.new(1,0,1,-44);TutScroll.Position=UDim2.new(0,0,0,44)
+TutScroll.BackgroundTransparency=1;TutScroll.BorderSizePixel=0;TutScroll.ScrollBarThickness=3
+TutScroll.ScrollBarImageColor3=C.Scrollbar;TutScroll.CanvasSize=UDim2.new(0,0,0,0)
+TutScroll.AutomaticCanvasSize=Enum.AutomaticSize.Y;TutScroll.ZIndex=26;TutScroll.Parent=TutFrame
+
+local TutLayout=Instance.new("UIListLayout");TutLayout.SortOrder=Enum.SortOrder.LayoutOrder;TutLayout.Padding=UDim.new(0,10);TutLayout.Parent=TutScroll
+local TutPad=Instance.new("UIPadding");TutPad.PaddingLeft=UDim.new(0,16);TutPad.PaddingRight=UDim.new(0,16);TutPad.PaddingTop=UDim.new(0,14);TutPad.PaddingBottom=UDim.new(0,18);TutPad.Parent=TutScroll
+
+local TutTitleLbl=Lbl(TutScroll,"📖  Como usar o Moon Copy Lite",16,C.Accent,Enum.Font.GothamBold,Enum.TextXAlignment.Center);TutTitleLbl.Size=UDim2.new(1,0,0,22)
+local TutSubLbl=Lbl(TutScroll,"Guia completo de uso – v3.5",10,C.TextDim,Enum.Font.Gotham,Enum.TextXAlignment.Center);TutSubLbl.Size=UDim2.new(1,0,0,16)
+
+local function TutStep(icon,title,desc,color)
+    color=color or C.Accent
+    local f=Instance.new("Frame");f.Size=UDim2.new(1,0,0,0);f.BackgroundColor3=C.Card;f.AutomaticSize=Enum.AutomaticSize.Y
+    f.BorderSizePixel=0;f.ZIndex=27;f.Parent=TutScroll;Crn(f,8);Stk(f,color,1)
+    local bar=Instance.new("Frame");bar.Size=UDim2.new(0,3,1,0);bar.BackgroundColor3=color;bar.BorderSizePixel=0;bar.ZIndex=28;bar.Parent=f;Crn(bar,3)
+    local inner=Instance.new("Frame");inner.Size=UDim2.new(1,-16,0,0);inner.Position=UDim2.new(0,12,0,0);inner.BackgroundTransparency=1;inner.AutomaticSize=Enum.AutomaticSize.Y;inner.BorderSizePixel=0;inner.ZIndex=28;inner.Parent=f
+    local iLL=Instance.new("UIListLayout");iLL.SortOrder=Enum.SortOrder.LayoutOrder;iLL.Padding=UDim.new(0,3);iLL.Parent=inner
+    local iPad=Instance.new("UIPadding");iPad.PaddingTop=UDim.new(0,10);iPad.PaddingBottom=UDim.new(0,10);iPad.Parent=inner
+    local hRow=Instance.new("Frame");hRow.Size=UDim2.new(1,0,0,18);hRow.BackgroundTransparency=1;hRow.LayoutOrder=1;hRow.Parent=inner
+    local icoL=Lbl(hRow,icon,13,color,Enum.Font.GothamBold);icoL.Size=UDim2.new(0,20,1,0)
+    local titleL=Lbl(hRow,title,11,color,Enum.Font.GothamBold);titleL.Size=UDim2.new(1,-24,1,0);titleL.Position=UDim2.new(0,22,0,0)
+    local descL=Instance.new("TextLabel");descL.BackgroundTransparency=1;descL.Size=UDim2.new(1,0,0,0);descL.AutomaticSize=Enum.AutomaticSize.Y
+    descL.Text=desc;descL.TextSize=10;descL.TextColor3=C.TextDim;descL.Font=Enum.Font.Gotham
+    descL.TextXAlignment=Enum.TextXAlignment.Left;descL.TextWrapped=true;descL.ZIndex=29;descL.LayoutOrder=2;descL.Parent=inner
+end
+
+TutStep("⎘","ABA COPIAR","Dê um nome ao save e escolha entre salvar Todo o Workspace ou a Seleção Atual. Clique em 💾 Salvar.",C.Accent)
+TutStep("🖱","SELEÇÃO POR CLIQUE","Clique em qualquer parte no workspace para selecioná-la. Shift+Click = adicionar à seleção. Click no vazio = limpar seleção.",C.AccentHov)
+TutStep("◈","ABA SALVADOS","Aqui ficam todos os seus saves. Clique num save para abrir opções de carregamento.",C.Success)
+TutStep("📍","GHOST PLACEMENT","Escolha 'Escolher posição (ghost)' para posicionar. Q/E = rotacionar 45°. Click = confirmar. ESC = cancelar.",C.Purple)
+TutStep("📐","PRO – Grade e Escala","Com o Pro ativo, defina uma grade (ex: 3×3) e escala (ex: 2 = dobro do tamanho).",C.Gold)
+TutStep("🏷","PRO – Tags e Pastas","Use as bolinhas coloridas para tag visual. Digite o nome da pasta no campo 📁.",C.Gold)
+TutStep("⭐","PRO – Favoritos","No modal do save, clique na estrela ☆ para favoritar. Saves favoritados aparecem no topo.",C.Gold)
+TutStep("⌨","ATALHOS","RightCtrl = toggle GUI  |  Q/E = rotacionar  |  Shift+Click = seleção múltipla  |  ESC = cancelar",C.Accent)
+
+local WarnBox=Instance.new("Frame");WarnBox.Size=UDim2.new(1,0,0,0);WarnBox.AutomaticSize=Enum.AutomaticSize.Y
+WarnBox.BackgroundColor3=Color3.fromRGB(42,8,8);WarnBox.BorderSizePixel=0;WarnBox.ZIndex=27;WarnBox.Parent=TutScroll;Crn(WarnBox,8);Stk(WarnBox,C.Danger,1.5)
+local WarnPad=Instance.new("UIPadding");WarnPad.PaddingLeft=UDim.new(0,14);WarnPad.PaddingRight=UDim.new(0,14);WarnPad.PaddingTop=UDim.new(0,12);WarnPad.PaddingBottom=UDim.new(0,14);WarnPad.Parent=WarnBox
+Lbl(WarnBox,"⚠  AVISO IMPORTANTE  ⚠",13,C.Danger,Enum.Font.GothamBold,Enum.TextXAlignment.Center).Size=UDim2.new(1,0,0,20)
+local WarnText=Instance.new("TextLabel");WarnText.BackgroundTransparency=1;WarnText.Size=UDim2.new(1,0,0,0);WarnText.AutomaticSize=Enum.AutomaticSize.Y
+WarnText.Position=UDim2.new(0,0,0,24);WarnText.Text="Se você usar isso para roubar mapas, saiba que NÃO nos responsabilizamos!\nCaso veja alguém roubando mapas, DENUNCIE aos criadores do jogo!"
+WarnText.TextSize=10;WarnText.TextColor3=Color3.fromRGB(220,140,140);WarnText.Font=Enum.Font.Gotham;WarnText.TextXAlignment=Enum.TextXAlignment.Center;WarnText.TextWrapped=true;WarnText.ZIndex=28;WarnText.Parent=WarnBox
+local TutCloseBot=TBtn(TutScroll,"✔  Entendi, fechar",11,C.Accent,Color3.fromRGB(6,10,20));TutCloseBot.Size=UDim2.new(1,0,0,40);TutCloseBot.ZIndex=27
+Hov(TutCloseBot,C.Accent,C.AccentHov);TutCloseBot.MouseButton1Click:Connect(CloseTutFrame)
+
+-- ============================================================
+-- BOTÃO PRO
+-- ============================================================
+local BPro
+local proBtnClickTime=0
+local function HandleProBtnClick()
+    if not IsPro() then OpenProFrame();return end
+    local now=tick()
+    if now-proBtnClickTime<0.4 then
+        proBtnClickTime=0;CloseModal()
+        local Ov=Instance.new("Frame");Ov.Name="_ov";Ov.Size=UDim2.new(1,0,1,0);Ov.BackgroundColor3=Color3.new(0,0,0);Ov.BackgroundTransparency=0.5;Ov.BorderSizePixel=0;Ov.ZIndex=40;Ov.Parent=Root
+        local M=Instance.new("Frame");M.Name="_modal";M.Size=UDim2.new(0,320,0,175);M.Position=UDim2.new(0.5,-160,0.5,-87);M.BackgroundColor3=C.Panel;M.BorderSizePixel=0;M.ZIndex=45;M.Parent=Root;Crn(M,10);Stk(M,C.Danger,1.5)
+        local ml=Lbl(M,"Desativar o Pro?\n\nA chave salva será apagada.\nVocê pode reativar a qualquer momento.",11,C.Text,Enum.Font.GothamBold,Enum.TextXAlignment.Center);ml.Size=UDim2.new(1,-20,0,100);ml.Position=UDim2.new(0,10,0,12);ml.TextWrapped=true;ml.ZIndex=46
+        local BY=TBtn(M,"🔓  Desativar Pro",11,C.Danger,C.Text);BY.Size=UDim2.new(0.5,-14,0,34);BY.Position=UDim2.new(0,10,1,-46);BY.ZIndex=47;Hov(BY,C.Danger,Color3.fromRGB(185,50,50))
+        BY.MouseButton1Click:Connect(function()
+            pcall(delfile,CONFIG.KEY_FILE);License.active=false;License.key="";License.plan="free"
+            ResetToFreeVisual();CloseModal();RebuildSaved();RebuildFolderBar();Notify("🔓  Pro desativado.",C.Warning);SetLastAction("Pro desativado")
+        end)
+        local BN=TBtn(M,"Cancelar",11,C.Row,C.TextDim);BN.Size=UDim2.new(0.5,-14,0,34);BN.Position=UDim2.new(0.5,4,1,-46);BN.ZIndex=47;Hov(BN,C.Row,C.RowHov);BN.MouseButton1Click:Connect(CloseModal)
+        M.Position=UDim2.new(0.5,-160,0.5,-107);TweenService:Create(M,TweenInfo.new(0.22,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Position=UDim2.new(0.5,-160,0.5,-87)}):Play()
+    else
+        proBtnClickTime=now;Notify("⭐  Clique 2x para desativar o Pro.",C.Warning)
+    end
+end
+
+-- ============================================================
+-- ABA 1 – COPIAR
+-- ============================================================
+local PgCopy=MkTab("Copiar","⎘",90)
+local SCopy=MkScroll(PgCopy)
+local SCL=Instance.new("UIListLayout");SCL.SortOrder=Enum.SortOrder.LayoutOrder;SCL.Padding=UDim.new(0,10);SCL.Parent=SCopy
+local SCP=Instance.new("UIPadding");SCP.PaddingLeft=UDim.new(0,14);SCP.PaddingRight=UDim.new(0,14);SCP.PaddingTop=UDim.new(0,14);SCP.Parent=SCopy
+
+local PlanBanner=Instance.new("Frame");PlanBanner.Size=UDim2.new(1,0,0,32);PlanBanner.BackgroundColor3=C.Card;PlanBanner.BorderSizePixel=0;PlanBanner.Parent=SCopy;Crn(PlanBanner,6);Stk(PlanBanner,C.Border,1)
+local PBIco=Lbl(PlanBanner,"💾",12,C.File,Enum.Font.GothamBold,Enum.TextXAlignment.Center);PBIco.Size=UDim2.new(0,24,1,0);PBIco.Position=UDim2.new(0,8,0,0)
+local PBLbl=Lbl(PlanBanner,"Free – 50 saves  •  Ative o Pro para saves ilimitados",10,C.TextDim,Enum.Font.Gotham);PBLbl.Size=UDim2.new(1,-38,1,0);PBLbl.Position=UDim2.new(0,34,0,0)
+
+Sec(SCopy,"NOME DO SAVE")
+local NF=Instance.new("Frame");NF.Size=UDim2.new(1,0,0,36);NF.BackgroundColor3=C.Card;NF.BorderSizePixel=0;NF.Parent=SCopy;Crn(NF,6);Stk(NF,C.Border,1)
+local NI=Instance.new("TextBox");NI.Size=UDim2.new(1,-18,1,0);NI.Position=UDim2.new(0,12,0,0);NI.BackgroundTransparency=1;NI.Text="";NI.PlaceholderText="Nome do save...";NI.PlaceholderColor3=C.TextDark;NI.TextColor3=C.Text;NI.TextSize=11;NI.Font=Enum.Font.Gotham;NI.TextXAlignment=Enum.TextXAlignment.Left;NI.ClearTextOnFocus=false;NI.Parent=NF
+NI.Focused:Connect(function() Stk(NF,C.Accent,1) end);NI.FocusLost:Connect(function() Stk(NF,C.Border,1) end)
+
+local FolderRowFrame=Instance.new("Frame");FolderRowFrame.Size=UDim2.new(1,0,0,32);FolderRowFrame.BackgroundColor3=C.ProBG;FolderRowFrame.BorderSizePixel=0;FolderRowFrame.Parent=SCopy;Crn(FolderRowFrame,6);Stk(FolderRowFrame,C.Gold,1)
+local FolLbl=Lbl(FolderRowFrame,"📁 Pasta:",9,C.Gold,Enum.Font.GothamBold);FolLbl.Size=UDim2.new(0,75,1,0);FolLbl.Position=UDim2.new(0,10,0,0)
+local FolderInput=Instance.new("TextBox");FolderInput.Size=UDim2.new(1,-88,1,0);FolderInput.Position=UDim2.new(0,82,0,0);FolderInput.BackgroundTransparency=1;FolderInput.Text="";FolderInput.PlaceholderText="Nome da pasta (opcional)";FolderInput.PlaceholderColor3=C.TextDark;FolderInput.TextColor3=C.Text;FolderInput.TextSize=10;FolderInput.Font=Enum.Font.Gotham;FolderInput.TextXAlignment=Enum.TextXAlignment.Left;FolderInput.ClearTextOnFocus=false;FolderInput.Parent=FolderRowFrame
+
+Sec(SCopy,"O QUE COPIAR")
+local MF=Instance.new("Frame");MF.Size=UDim2.new(1,0,0,76);MF.BackgroundColor3=C.Card;MF.BorderSizePixel=0;MF.Parent=SCopy;Crn(MF,6);Stk(MF,C.Border,1)
+local MFL=Instance.new("UIListLayout");MFL.SortOrder=Enum.SortOrder.LayoutOrder;MFL.Parent=MF
+
+local CopyMode="workspace"
+local function RadioRow(par,label,desc,order)
+    local row=Instance.new("Frame");row.Size=UDim2.new(1,0,0,37);row.BackgroundTransparency=1;row.LayoutOrder=order;row.Parent=par
+    if order>1 then local sep=Instance.new("Frame");sep.Size=UDim2.new(1,-20,0,1);sep.Position=UDim2.new(0,10,0,0);sep.BackgroundColor3=C.Border;sep.BorderSizePixel=0;sep.Parent=row end
+    local radio=Instance.new("Frame");radio.Size=UDim2.new(0,14,0,14);radio.Position=UDim2.new(0,14,0.5,-7);radio.BackgroundColor3=C.Border;radio.BorderSizePixel=0;radio.Parent=row;Crn(radio,7)
+    local dot=Instance.new("Frame");dot.Size=UDim2.new(0,6,0,6);dot.Position=UDim2.new(0.5,-3,0.5,-3);dot.BackgroundColor3=C.BG;dot.BorderSizePixel=0;dot.Visible=false;dot.Parent=radio;Crn(dot,3)
+    local kl=Lbl(row,label,11,C.Text,Enum.Font.GothamBold);kl.Size=UDim2.new(0.65,0,0,18);kl.Position=UDim2.new(0,36,0.5,-13)
+    local dl=Lbl(row,desc,9,C.TextDim);dl.Size=UDim2.new(1,-36,0,12);dl.Position=UDim2.new(0,36,0.5,5)
+    local cb=Instance.new("TextButton");cb.Size=UDim2.new(1,0,1,0);cb.BackgroundTransparency=1;cb.Text="";cb.Parent=row
+    return radio,dot,cb
+end
+
+local mr1,md1,mc1=RadioRow(MF,"Todo o Workspace","Serializa todos os objetos",1)
+local mr2,md2,mc2=RadioRow(MF,"Seleção Atual","Apenas os objetos selecionados",2)
+
+local function SetMode(m)
+    CopyMode=m;mr1.BackgroundColor3=m=="workspace" and C.Accent or C.Border;md1.Visible=m=="workspace"
+    mr2.BackgroundColor3=m=="selection" and C.Accent or C.Border;md2.Visible=m=="selection"
+end
+SetMode("workspace");mc1.MouseButton1Click:Connect(function() SetMode("workspace") end);mc2.MouseButton1Click:Connect(function() SetMode("selection") end)
+
+local BSave=TBtn(SCopy,"💾  Salvar Agora",12,C.Accent,Color3.fromRGB(6,10,20));BSave.Size=UDim2.new(1,0,0,42);Hov(BSave,C.Accent,C.AccentHov)
+BSave.MouseButton1Click:Connect(function()
+    local name=NI.Text:match("^%s*(.-)%s*$")
+    if name=="" then Notify("❌  Digite um nome!",C.Warning);return end
+    name=name:gsub('[/\\:*?"<>|]','_')
+    local folder=IsPro() and FolderInput.Text:match("^%s*(.-)%s*$") or nil
+    local json,count,err
+    if CopyMode=="workspace" then json,count=SrWS()
+    else json,count,err=SrSel();if err then Notify("❌  "..err,C.Warning);return end end
+    if count==0 then Notify("⚠  Nenhum objeto!",C.Warning);return end
+    local ok,msg=OpSave(name,json,count,CopyMode,nil,nil,folder)
+    if ok then
+        NI.Text="";FolderInput.Text="";Notify("✔  \""..name.."\" salvo! ("..count.." itens)",C.Success);SetLastAction("Salvo: "..name)
+        task.delay(0.1,function() RebuildSaved();RebuildFolderBar();SetTab("Salvados") end)
+    else Notify("❌  "..tostring(msg),C.Danger) end
+end)
+
+local BtnRow=Instance.new("Frame");BtnRow.Size=UDim2.new(1,0,0,36);BtnRow.BackgroundTransparency=1;BtnRow.Parent=SCopy
+local BtnRowLayout=Instance.new("UIListLayout");BtnRowLayout.FillDirection=Enum.FillDirection.Horizontal;BtnRowLayout.SortOrder=Enum.SortOrder.LayoutOrder;BtnRowLayout.Padding=UDim.new(0,8);BtnRowLayout.Parent=BtnRow
+
+local BGo=TBtn(BtnRow,"◈ Salvados",10,C.Card,C.Accent);BGo.Size=UDim2.new(0.33,-6,1,0);BGo.LayoutOrder=1;Stk(BGo,C.AccentDim,1);Hov(BGo,C.Card,C.Row);BGo.MouseButton1Click:Connect(function() RebuildSaved();SetTab("Salvados") end)
+BPro=TBtn(BtnRow,"⭐ Pro",10,C.ProBG,C.Gold);BPro.Size=UDim2.new(0.34,-6,1,0);BPro.LayoutOrder=2;Stk(BPro,C.Gold,1);Hov(BPro,C.ProBG,Color3.fromRGB(38,32,12));BPro.MouseButton1Click:Connect(HandleProBtnClick)
+local BTutBtn=TBtn(BtnRow,"📖 Tutorial",10,C.Card,C.TextDim);BTutBtn.Size=UDim2.new(0.33,-6,1,0);BTutBtn.LayoutOrder=3;Stk(BTutBtn,C.Border,1);Hov(BTutBtn,C.Card,C.Row);BTutBtn.MouseButton1Click:Connect(OpenTutFrame)
+
+-- ============================================================
+-- ABA 2 – SALVADOS
+-- ============================================================
+local function InitSavedTab()
+    local PgSaved=MkTab("Salvados","◈",100)
+    local FolderBar=Instance.new("Frame");FolderBar.Size=UDim2.new(1,0,0,0);FolderBar.BackgroundColor3=Color3.fromRGB(20,16,6);FolderBar.BorderSizePixel=0;FolderBar.ClipsDescendants=true;FolderBar.Parent=PgSaved
+    local FolderBarScroll=Instance.new("ScrollingFrame");FolderBarScroll.Size=UDim2.new(1,0,1,0);FolderBarScroll.BackgroundTransparency=1;FolderBarScroll.BorderSizePixel=0;FolderBarScroll.ScrollBarThickness=2;FolderBarScroll.ScrollBarImageColor3=C.Gold;FolderBarScroll.CanvasSize=UDim2.new(0,0,0,0);FolderBarScroll.AutomaticCanvasSize=Enum.AutomaticSize.X;FolderBarScroll.ScrollingDirection=Enum.ScrollingDirection.X;FolderBarScroll.Parent=FolderBar
+    local FolderBarLayout=Instance.new("UIListLayout");FolderBarLayout.FillDirection=Enum.FillDirection.Horizontal;FolderBarLayout.SortOrder=Enum.SortOrder.LayoutOrder;FolderBarLayout.Padding=UDim.new(0,4);FolderBarLayout.Parent=FolderBarScroll
+    local FBPad=Instance.new("UIPadding");FBPad.PaddingLeft=UDim.new(0,8);FBPad.PaddingTop=UDim.new(0,5);FBPad.PaddingBottom=UDim.new(0,5);FBPad.Parent=FolderBarScroll
+
+    local SvHeader=Instance.new("Frame");SvHeader.Size=UDim2.new(1,0,0,78);SvHeader.Position=UDim2.new(0,0,0,0);SvHeader.BackgroundColor3=C.Panel;SvHeader.BorderSizePixel=0;SvHeader.Parent=PgSaved
+    local SvHL=Instance.new("Frame");SvHL.Size=UDim2.new(1,0,0,1);SvHL.Position=UDim2.new(0,0,1,-1);SvHL.BackgroundColor3=C.Border;SvHL.BorderSizePixel=0;SvHL.Parent=SvHeader
+
+    local SvRow1=Instance.new("Frame");SvRow1.Size=UDim2.new(1,-18,0,30);SvRow1.Position=UDim2.new(0,9,0,9);SvRow1.BackgroundTransparency=1;SvRow1.Parent=SvHeader
+    local SearchF=Instance.new("Frame");SearchF.Size=UDim2.new(1,-88,1,0);SearchF.BackgroundColor3=C.Card;SearchF.BorderSizePixel=0;SearchF.Parent=SvRow1;Crn(SearchF,6);Stk(SearchF,C.Border,1)
+    local SearchIco=Lbl(SearchF,"🔍",10,C.TextDark,Enum.Font.GothamBold,Enum.TextXAlignment.Center);SearchIco.Size=UDim2.new(0,24,1,0)
+    local SvSearch=Instance.new("TextBox");SvSearch.Size=UDim2.new(1,-30,1,0);SvSearch.Position=UDim2.new(0,26,0,0);SvSearch.BackgroundTransparency=1;SvSearch.Text="";SvSearch.PlaceholderText="Buscar saves...";SvSearch.PlaceholderColor3=C.TextDark;SvSearch.TextColor3=C.Text;SvSearch.TextSize=10;SvSearch.Font=Enum.Font.Gotham;SvSearch.TextXAlignment=Enum.TextXAlignment.Left;SvSearch.ClearTextOnFocus=false;SvSearch.Parent=SearchF
+    local BBackTop=TBtn(SvRow1,"← Copiar",9,C.Card,C.Accent);BBackTop.Size=UDim2.new(0,82,1,0);BBackTop.Position=UDim2.new(1,-82,0,0);Stk(BBackTop,C.AccentDim,1);Hov(BBackTop,C.Card,C.Row);BBackTop.MouseButton1Click:Connect(function() SetTab("Copiar") end)
+
+    local SvRow2=Instance.new("Frame");SvRow2.Size=UDim2.new(1,-18,0,26);SvRow2.Position=UDim2.new(0,9,0,46);SvRow2.BackgroundTransparency=1;SvRow2.Parent=SvHeader
+    local sortBtns={}
+    local function MkSortBtn(label,mode,xpos)
+        local b=TBtn(SvRow2,label,9,mode==SortMode and C.Accent or C.Card,mode==SortMode and Color3.fromRGB(8,10,20) or C.TextDim)
+        b.Size=UDim2.new(0,56,1,0);b.Position=UDim2.new(0,xpos,0,0);sortBtns[mode]=b
+        b.MouseButton1Click:Connect(function()
+            SortMode=mode
+            for m,btn in pairs(sortBtns) do btn.BackgroundColor3=m==mode and C.Accent or C.Card;btn.TextColor3=m==mode and Color3.fromRGB(8,10,20) or C.TextDim end
+            RebuildSaved(SvSearch.Text)
+        end)
+    end
+    MkSortBtn("📅 Data","date",0);MkSortBtn("📤 Nome","name",60);MkSortBtn("📦 Tam","size",120)
+
+    local BRef=TBtn(SvRow2,"↻",12,C.Card,C.Accent);BRef.Size=UDim2.new(0,30,1,0);BRef.Position=UDim2.new(1,-98,0,0);Hov(BRef,C.Card,C.Row)
+    BRef.MouseButton1Click:Connect(function() SyncIndex();RebuildSaved(SvSearch.Text);Notify("↻  Atualizado!",C.Accent) end)
+
+    local SvCnt=Instance.new("Frame");SvCnt.Size=UDim2.new(0,62,1,0);SvCnt.Position=UDim2.new(1,-62,0,0);SvCnt.BackgroundColor3=C.Card;SvCnt.BorderSizePixel=0;SvCnt.Parent=SvRow2;Crn(SvCnt,6);Stk(SvCnt,C.Border,1)
+    local SvCntL=Lbl(SvCnt,"0 saves",9,C.TextDim,Enum.Font.GothamBold,Enum.TextXAlignment.Center);SvCntL.Size=UDim2.new(1,0,1,0)
+
+    local SvScrollFrame=Instance.new("Frame");SvScrollFrame.Size=UDim2.new(1,0,1,-78);SvScrollFrame.Position=UDim2.new(0,0,0,78);SvScrollFrame.BackgroundTransparency=1;SvScrollFrame.Parent=PgSaved
+    local SvScroll=Instance.new("ScrollingFrame");SvScroll.Size=UDim2.new(1,0,1,0);SvScroll.BackgroundTransparency=1;SvScroll.BorderSizePixel=0;SvScroll.ScrollBarThickness=3;SvScroll.ScrollBarImageColor3=C.Scrollbar;SvScroll.CanvasSize=UDim2.new(0,0,0,0);SvScroll.AutomaticCanvasSize=Enum.AutomaticSize.Y;SvScroll.Parent=SvScrollFrame
+    local SvPad=Instance.new("UIPadding");SvPad.PaddingLeft=UDim.new(0,10);SvPad.PaddingRight=UDim.new(0,10);SvPad.PaddingTop=UDim.new(0,10);SvPad.PaddingBottom=UDim.new(0,10);SvPad.Parent=SvScroll
+    local SvGrid=Instance.new("UIGridLayout");SvGrid.CellSize=UDim2.new(0.5,-6,0,108);SvGrid.CellPadding=UDim2.new(0,6,0,6);SvGrid.SortOrder=Enum.SortOrder.LayoutOrder;SvGrid.FillDirectionMaxCells=2;SvGrid.Parent=SvScroll
+
+    RebuildFolderBar = function()
+        for _,c in ipairs(FolderBarScroll:GetChildren()) do if c:IsA("TextButton") or c:IsA("Frame") then c:Destroy() end end
+        if not IsPro() then FolderBar.Size=UDim2.new(1,0,0,0);SvHeader.Position=UDim2.new(0,0,0,0);SvScrollFrame.Position=UDim2.new(0,0,0,78);SvScrollFrame.Size=UDim2.new(1,0,1,-78);return end
+        FolderBar.Size=UDim2.new(1,0,0,32);SvHeader.Position=UDim2.new(0,0,0,32);SvScrollFrame.Position=UDim2.new(0,0,0,110);SvScrollFrame.Size=UDim2.new(1,0,1,-110)
+        local index=LoadIndex();local folders={};local seen={}
+        for _,e in ipairs(index) do if e.folder and e.folder~="" and not seen[e.folder] then seen[e.folder]=true;table.insert(folders,e.folder) end end
+        table.sort(folders)
+        local bAll=TBtn(FolderBarScroll,"📂  Todos",9,CurrentFolder==nil and C.Gold or C.Row,CurrentFolder==nil and Color3.fromRGB(14,11,0) or C.TextDim)
+        bAll.Size=UDim2.new(0,66,0,22);bAll.LayoutOrder=0;if CurrentFolder==nil then Stk(bAll,C.Gold,1) end
+        bAll.MouseButton1Click:Connect(function() CurrentFolder=nil;RebuildFolderBar();RebuildSaved(SvSearch.Text) end)
+        for i,fname in ipairs(folders) do
+            local isActive=CurrentFolder==fname
+            local btn=TBtn(FolderBarScroll,"📁  "..fname,9,isActive and C.Gold or C.Row,isActive and Color3.fromRGB(14,11,0) or C.TextDim)
+            btn.Size=UDim2.new(0,math.max(62,#fname*7+32),0,22);btn.LayoutOrder=i;if isActive then Stk(btn,C.Gold,1) end
+            local capF=fname;btn.MouseButton1Click:Connect(function() CurrentFolder=capF;RebuildFolderBar();RebuildSaved(SvSearch.Text) end)
+        end
+    end
+
+    local function ShowModal(meta)
+        CloseModal()
+        local Ov=Instance.new("Frame");Ov.Name="_ov";Ov.Size=UDim2.new(1,0,1,0);Ov.BackgroundColor3=Color3.new(0,0,0);Ov.BackgroundTransparency=0.5;Ov.BorderSizePixel=0;Ov.ZIndex=40;Ov.Parent=Root
+        local M=Instance.new("Frame");M.Name="_modal";M.Size=UDim2.new(0,370,0,430);M.Position=UDim2.new(0.5,-185,0.5,-215);M.BackgroundColor3=C.Panel;M.BorderSizePixel=0;M.ZIndex=45;M.Parent=Root;Crn(M,10);Stk(M,C.Accent,1.5)
+        local MH=Instance.new("Frame");MH.Size=UDim2.new(1,0,0,40);MH.BackgroundColor3=C.Header;MH.BorderSizePixel=0;MH.ZIndex=46;MH.Parent=M;Crn(MH,10)
+        local MHF=Instance.new("Frame");MHF.Size=UDim2.new(1,0,0.5,0);MHF.Position=UDim2.new(0,0,0.5,0);MHF.BackgroundColor3=C.Header;MHF.BorderSizePixel=0;MHF.ZIndex=46;MHF.Parent=MH
+        if meta.tag and TAG_COLORS[meta.tag] then local strip=Instance.new("Frame");strip.Size=UDim2.new(0,4,1,0);strip.BackgroundColor3=TAG_COLORS[meta.tag].color;strip.BorderSizePixel=0;strip.ZIndex=49;strip.Parent=MH;Crn(strip,4) end
+        local MHL=Lbl(MH,"◈  "..meta.name,12,C.Text,Enum.Font.GothamBold);MHL.Size=UDim2.new(1,-90,1,0);MHL.Position=UDim2.new(0,14,0,0);MHL.ZIndex=47
+        local favBtn=TBtn(MH,meta.favorite and "⭐" or "☆",13,Color3.fromRGB(35,32,14),meta.favorite and C.Gold or C.TextDark);favBtn.Size=UDim2.new(0,28,0,24);favBtn.Position=UDim2.new(1,-60,0.5,-12);favBtn.ZIndex=48
+        favBtn.MouseButton1Click:Connect(function()
+            if not IsPro() then Notify("⭐  Favoritar é Pro!",C.Gold);return end
+            OpToggleFavorite(meta.name);meta.favorite=not meta.favorite;favBtn.Text=meta.favorite and "⭐" or "☆";favBtn.TextColor3=meta.favorite and C.Gold or C.TextDark;RebuildSaved(SvSearch.Text)
+        end)
+        local MX=TBtn(MH,"✕",9,Color3.fromRGB(40,40,55),C.TextDim);MX.Size=UDim2.new(0,26,0,24);MX.Position=UDim2.new(1,-30,0.5,-12);MX.ZIndex=48;Hov(MX,Color3.fromRGB(40,40,55),C.Danger);MX.MouseButton1Click:Connect(CloseModal)
+        local MI=Lbl(M,string.format("  %d itens  •  %s  •  %s atrás  •  🔒",meta.itemCount or 0,FormatSize(meta.size or 0),FormatTime(meta.time or 0)),9,C.TextDim,Enum.Font.Gotham);MI.Size=UDim2.new(1,-16,0,14);MI.Position=UDim2.new(0,14,0,46);MI.ZIndex=46
+        local ProOptionsFrame=Instance.new("Frame");ProOptionsFrame.Size=UDim2.new(1,-20,0,64);ProOptionsFrame.Position=UDim2.new(0,10,0,66);ProOptionsFrame.BackgroundColor3=C.ProBG;ProOptionsFrame.BorderSizePixel=0;ProOptionsFrame.ZIndex=46;ProOptionsFrame.Parent=M;Crn(ProOptionsFrame,8);Stk(ProOptionsFrame,C.Gold,1)
+        Lbl(ProOptionsFrame,"⭐  Pro",8,IsPro() and C.Gold or C.TextDark,Enum.Font.GothamBold).Size=UDim2.new(0,50,0,12)
+        local scaleF=Instance.new("Frame");scaleF.Size=UDim2.new(0,68,0,24);scaleF.Position=UDim2.new(0,78,0,18);scaleF.BackgroundColor3=C.Row;scaleF.BorderSizePixel=0;scaleF.ZIndex=47;scaleF.Parent=ProOptionsFrame;Crn(scaleF,5);Stk(scaleF,C.Gold,1)
+        local scaleInput=Instance.new("TextBox");scaleInput.Size=UDim2.new(1,-8,1,0);scaleInput.Position=UDim2.new(0,6,0,0);scaleInput.BackgroundTransparency=1;scaleInput.Text="1";scaleInput.TextColor3=C.Text;scaleInput.TextSize=11;scaleInput.Font=Enum.Font.GothamBold;scaleInput.TextXAlignment=Enum.TextXAlignment.Center;scaleInput.ClearTextOnFocus=false;scaleInput.ZIndex=48;scaleInput.Parent=scaleF
+        local colF=Instance.new("Frame");colF.Size=UDim2.new(0,36,0,24);colF.Position=UDim2.new(0.5,66,0,18);colF.BackgroundColor3=C.Row;colF.BorderSizePixel=0;colF.ZIndex=47;colF.Parent=ProOptionsFrame;Crn(colF,5);Stk(colF,C.Gold,1)
+        local colInput=Instance.new("TextBox");colInput.Size=UDim2.new(1,-4,1,0);colInput.Position=UDim2.new(0,4,0,0);colInput.BackgroundTransparency=1;colInput.Text="1";colInput.TextColor3=C.Text;colInput.TextSize=11;colInput.Font=Enum.Font.GothamBold;colInput.TextXAlignment=Enum.TextXAlignment.Center;colInput.ClearTextOnFocus=false;colInput.ZIndex=48;colInput.Parent=colF
+        local rowF=Instance.new("Frame");rowF.Size=UDim2.new(0,36,0,24);rowF.Position=UDim2.new(0.5,115,0,18);rowF.BackgroundColor3=C.Row;rowF.BorderSizePixel=0;rowF.ZIndex=47;rowF.Parent=ProOptionsFrame;Crn(rowF,5);Stk(rowF,C.Gold,1)
+        local rowInput=Instance.new("TextBox");rowInput.Size=UDim2.new(1,-4,1,0);rowInput.Position=UDim2.new(0,4,0,0);rowInput.BackgroundTransparency=1;rowInput.Text="1";rowInput.TextColor3=C.Text;rowInput.TextSize=11;rowInput.Font=Enum.Font.GothamBold;rowInput.TextXAlignment=Enum.TextXAlignment.Center;rowInput.ClearTextOnFocus=false;rowInput.ZIndex=48;rowInput.Parent=rowF
+        local spacingF=Instance.new("Frame");spacingF.Size=UDim2.new(0,34,0,24);spacingF.Position=UDim2.new(0.5,164,0,18);spacingF.BackgroundColor3=C.Row;spacingF.BorderSizePixel=0;spacingF.ZIndex=47;spacingF.Parent=ProOptionsFrame;Crn(spacingF,5);Stk(spacingF,C.Gold,1)
+        local spacingInput=Instance.new("TextBox");spacingInput.Size=UDim2.new(1,-4,1,0);spacingInput.Position=UDim2.new(0,4,0,0);spacingInput.BackgroundTransparency=1;spacingInput.Text="2";spacingInput.TextColor3=C.Text;spacingInput.TextSize=11;spacingInput.Font=Enum.Font.GothamBold;spacingInput.TextXAlignment=Enum.TextXAlignment.Center;spacingInput.ClearTextOnFocus=false;spacingInput.ZIndex=48;spacingInput.Parent=spacingF
+        if not IsPro() then for _,inp in ipairs({scaleInput,colInput,rowInput,spacingInput}) do inp.TextColor3=C.TextDark;inp.TextEditable=false end end
+        local function GetScale() if not IsPro() then return 1 end;local v=tonumber(scaleInput.Text);return (v and v>0 and v<=10) and v or 1 end
+        local function GetGrid()
+            if not IsPro() then return 1,1,2 end
+            return math.clamp(tonumber(colInput.Text) or 1,1,10),math.clamp(tonumber(rowInput.Text) or 1,1,10),math.max(tonumber(spacingInput.Text) or 2,0)
+        end
+        local MQ=Lbl(M,"Como deseja carregar?",11,C.Text,Enum.Font.GothamBold,Enum.TextXAlignment.Center);MQ.Size=UDim2.new(1,0,0,16);MQ.Position=UDim2.new(0,0,0,138);MQ.ZIndex=46
+        local BPlace=TBtn(M,"📍  Escolher posição (ghost)",11,Color3.fromRGB(16,26,44),C.Accent);BPlace.Size=UDim2.new(1,-20,0,32);BPlace.Position=UDim2.new(0,10,0,160);BPlace.ZIndex=47;Stk(BPlace,C.AccentDim,1);Hov(BPlace,Color3.fromRGB(16,26,44),Color3.fromRGB(22,38,68))
+        BPlace.MouseButton1Click:Connect(function()
+            local sc=GetScale();local cols,rows,spacing=GetGrid();CloseModal();Win.Visible=false
+            local ok,json=OpLoad(meta.name)
+            if not ok then Win.Visible=true;Notify("❌  "..tostring(json),C.Danger);return end
+            StartPlacement(meta.name,json,sc,function(jsonStr,pos,rotY,scale)
+                Win.Visible=true;if not jsonStr then return end;SaveBackup("pre_placement")
+                if cols==1 and rows==1 then
+                    LoadJSONAdvanced(jsonStr,false,pos,rotY,scale,function(loadOk,count)
+                        if loadOk then Notify("✔  Colocado ("..tostring(count).." itens) 🔒",C.Success) else Notify("❌  "..tostring(count),C.Danger) end
+                    end)
+                else
+                    SpawnGrid(jsonStr,pos,rotY,scale,cols,rows,spacing,function(ok2,count)
+                        if ok2 then Notify("✔  Grade "..cols.."×"..rows.." ("..tostring(count).." itens) 🔒",C.Success) else Notify("❌  Erro",C.Danger) end
+                    end)
+                end
+            end)
+        end)
+        local BCL=TBtn(M,"🗑  Limpar + Carregar",10,C.Danger,C.Text);BCL.Size=UDim2.new(0.5,-14,0,30);BCL.Position=UDim2.new(0,10,0,200);BCL.ZIndex=47;Hov(BCL,C.Danger,Color3.fromRGB(185,52,52))
+        BCL.MouseButton1Click:Connect(function()
+            CloseModal();local sc=GetScale();local ok,json=OpLoad(meta.name)
+            if not ok then Notify("❌  "..tostring(json),C.Danger);return end
+            SaveBackup("pre_limpar");LoadJSONAdvanced(json,true,nil,0,sc,function(loadOk,count)
+                if loadOk then Notify("✔  Carregado ("..tostring(count).." itens) 🔒",C.Success) else Notify("❌  "..tostring(count),C.Danger) end
+            end)
+        end)
+        local BAD=TBtn(M,"⊕  Adicionar",10,C.AccentDim,C.Text);BAD.Size=UDim2.new(0.5,-14,0,30);BAD.Position=UDim2.new(0.5,4,0,200);BAD.ZIndex=47;Hov(BAD,C.AccentDim,Color3.fromRGB(50,110,185))
+        BAD.MouseButton1Click:Connect(function()
+            CloseModal();local sc=GetScale();local cols,rows,spacing=GetGrid();local ok,json=OpLoad(meta.name)
+            if not ok then Notify("❌  "..tostring(json),C.Danger);return end
+            if cols==1 and rows==1 then
+                LoadJSONAdvanced(json,false,nil,0,sc,function(loadOk,count)
+                    if loadOk then Notify("✔  Adicionado ("..tostring(count).." itens) 🔒",C.Success) else Notify("❌  "..tostring(count),C.Danger) end
+                end)
+            else
+                local pos=Camera.CFrame.Position+Camera.CFrame.LookVector*20
+                SpawnGrid(json,pos,0,sc,cols,rows,spacing,function(ok2,count)
+                    if ok2 then Notify("✔  Grade "..cols.."×"..rows.." ("..tostring(count).." itens) 🔒",C.Success) else Notify("❌  Erro",C.Danger) end
+                end)
+            end
+        end)
+        local sep=Instance.new("Frame");sep.Size=UDim2.new(1,-20,0,1);sep.Position=UDim2.new(0,10,0,240);sep.BackgroundColor3=C.Border;sep.BorderSizePixel=0;sep.ZIndex=46;sep.Parent=M
+        local tagX=60;local currentTagIdx=meta.tag or 0;local tagBtns={}
+        local noTagBtn=TBtn(M,"✕",9,currentTagIdx==0 and C.Row or Color3.fromRGB(28,28,38),currentTagIdx==0 and C.Text or C.TextDark);noTagBtn.Size=UDim2.new(0,18,0,18);noTagBtn.Position=UDim2.new(0,tagX,0,248);noTagBtn.ZIndex=47;tagX=tagX+22
+        for i,tc in ipairs(TAG_COLORS) do
+            local tb=Instance.new("TextButton");tb.Size=UDim2.new(0,18,0,18);tb.Position=UDim2.new(0,tagX,0,248);tb.BackgroundColor3=tc.color;tb.Text="";tb.BorderSizePixel=0;tb.AutoButtonColor=false;tb.ZIndex=47;tb.Parent=M;Crn(tb,3)
+            if currentTagIdx==i then Stk(tb,Color3.fromRGB(255,255,255),2) end
+            local capi=i
+            tb.MouseButton1Click:Connect(function()
+                if not IsPro() then Notify("⭐  Tags são Pro!",C.Gold);return end
+                currentTagIdx=capi;OpSetTag(meta.name,capi)
+                for _,b in ipairs(tagBtns) do if b._stk then b._stk:Destroy();b._stk=nil end end
+                local s=Stk(tb,Color3.fromRGB(255,255,255),2);tb._stk=s;RebuildSaved(SvSearch.Text);Notify("🏷  Tag aplicada!",tc.color)
+            end)
+            tb._stk=currentTagIdx==i and Stk(tb,Color3.fromRGB(255,255,255),2) or nil;table.insert(tagBtns,tb);tagX=tagX+22
+        end
+        noTagBtn.MouseButton1Click:Connect(function()
+            if not IsPro() then Notify("⭐  Tags são Pro!",C.Gold);return end
+            currentTagIdx=0;OpSetTag(meta.name,nil)
+            for _,b in ipairs(tagBtns) do if b._stk then b._stk:Destroy();b._stk=nil end end
+            noTagBtn.BackgroundColor3=C.Row;noTagBtn.TextColor3=C.Text;RebuildSaved(SvSearch.Text)
+        end)
+        local folFrame=Instance.new("Frame");folFrame.Size=UDim2.new(1,-82,0,24);folFrame.Position=UDim2.new(0,70,0,276);folFrame.BackgroundColor3=C.Row;folFrame.BorderSizePixel=0;folFrame.ZIndex=46;folFrame.Parent=M;Crn(folFrame,5);Stk(folFrame,C.Border,1)
+        local folInput=Instance.new("TextBox");folInput.Size=UDim2.new(1,-12,1,0);folInput.Position=UDim2.new(0,8,0,0);folInput.BackgroundTransparency=1;folInput.Text=meta.folder or "";folInput.PlaceholderText="Sem pasta";folInput.PlaceholderColor3=C.TextDark;folInput.TextColor3=C.Text;folInput.TextSize=10;folInput.Font=Enum.Font.Gotham;folInput.TextXAlignment=Enum.TextXAlignment.Left;folInput.ClearTextOnFocus=false;folInput.ZIndex=47;folInput.Parent=folFrame
+        if not IsPro() then folInput.TextColor3=C.TextDark;folInput.TextEditable=false end
+        local folSave=TBtn(M,"✔",10,Color3.fromRGB(22,36,22),C.File);folSave.Size=UDim2.new(0,24,0,24);folSave.Position=UDim2.new(1,-36,0,276);folSave.ZIndex=47
+        folSave.MouseButton1Click:Connect(function()
+            if not IsPro() then Notify("⭐  Pastas são Pro!",C.Gold);return end
+            local fn=folInput.Text:match("^%s*(.-)%s*$");OpSetFolder(meta.name,fn);meta.folder=fn~="" and fn or nil
+            RebuildSaved(SvSearch.Text);RebuildFolderBar();Notify("📁  "..(fn~="" and fn or "removida"),C.File)
+        end)
+        local sep2=Instance.new("Frame");sep2.Size=UDim2.new(1,-20,0,1);sep2.Position=UDim2.new(0,10,0,310);sep2.BackgroundColor3=C.Border;sep2.BorderSizePixel=0;sep2.ZIndex=46;sep2.Parent=M
+        local BRen=TBtn(M,"✎ Renomear",9,Color3.fromRGB(36,30,14),C.Warning);BRen.Size=UDim2.new(1/3,-8,0,28);BRen.Position=UDim2.new(0,10,0,318);BRen.ZIndex=47;Hov(BRen,Color3.fromRGB(36,30,14),Color3.fromRGB(52,44,18))
+        BRen.MouseButton1Click:Connect(function()
+            CloseModal()
+            local Ov2=Instance.new("Frame");Ov2.Name="_ov";Ov2.Size=UDim2.new(1,0,1,0);Ov2.BackgroundColor3=Color3.new(0,0,0);Ov2.BackgroundTransparency=0.5;Ov2.BorderSizePixel=0;Ov2.ZIndex=40;Ov2.Parent=Root
+            local M2=Instance.new("Frame");M2.Name="_modal";M2.Size=UDim2.new(0,320,0,122);M2.Position=UDim2.new(0.5,-160,0.5,-61);M2.BackgroundColor3=C.Panel;M2.BorderSizePixel=0;M2.ZIndex=45;M2.Parent=Root;Crn(M2,10);Stk(M2,C.Warning,1.5)
+            local MH2=Instance.new("Frame");MH2.Size=UDim2.new(1,0,0,34);MH2.BackgroundColor3=C.Header;MH2.BorderSizePixel=0;MH2.ZIndex=46;MH2.Parent=M2;Crn(MH2,10)
+            local MHF2=Instance.new("Frame");MHF2.Size=UDim2.new(1,0,0.5,0);MHF2.Position=UDim2.new(0,0,0.5,0);MHF2.BackgroundColor3=C.Header;MHF2.BorderSizePixel=0;MHF2.ZIndex=46;MHF2.Parent=MH2
+            Lbl(MH2,"✎  Renomear save",11,C.Warning,Enum.Font.GothamBold).Size=UDim2.new(1,-36,1,0)
+            local MX2=TBtn(MH2,"✕",9,Color3.fromRGB(40,40,55),C.TextDim);MX2.Size=UDim2.new(0,24,0,22);MX2.Position=UDim2.new(1,-28,0.5,-11);MX2.ZIndex=48;Hov(MX2,Color3.fromRGB(40,40,55),C.Danger);MX2.MouseButton1Click:Connect(CloseModal)
+            local rf=Instance.new("Frame");rf.Size=UDim2.new(1,-20,0,28);rf.Position=UDim2.new(0,10,0,40);rf.BackgroundColor3=C.Row;rf.BorderSizePixel=0;rf.ZIndex=46;rf.Parent=M2;Crn(rf,5);Stk(rf,C.Border,1)
+            local ri=Instance.new("TextBox");ri.Size=UDim2.new(1,-16,1,0);ri.Position=UDim2.new(0,10,0,0);ri.BackgroundTransparency=1;ri.Text=meta.name;ri.TextColor3=C.Text;ri.TextSize=11;ri.Font=Enum.Font.Gotham;ri.TextXAlignment=Enum.TextXAlignment.Left;ri.ClearTextOnFocus=false;ri.ZIndex=47;ri.Parent=rf
+            local BC2=TBtn(M2,"✔",10,C.Warning,Color3.fromRGB(10,8,0));BC2.Size=UDim2.new(0.5,-14,0,26);BC2.Position=UDim2.new(0,10,1,-36);BC2.ZIndex=47
+            BC2.MouseButton1Click:Connect(function()
+                local newN=ri.Text:match("^%s*(.-)%s*$");if newN=="" then return end
+                local ok2,err2=OpRename(meta.name,newN)
+                if ok2 then Notify("✎  Renomeado!",C.Warning);CloseModal();RebuildSaved(SvSearch.Text) else Notify("❌  "..tostring(err2),C.Danger) end
+            end)
+            local BC3=TBtn(M2,"Cancelar",10,C.Row,C.TextDim);BC3.Size=UDim2.new(0.5,-14,0,26);BC3.Position=UDim2.new(0.5,4,1,-36);BC3.ZIndex=47;BC3.MouseButton1Click:Connect(CloseModal)
+            M2.Position=UDim2.new(0.5,-160,0.5,-81);TweenService:Create(M2,TweenInfo.new(0.22,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Position=UDim2.new(0.5,-160,0.5,-61)}):Play()
+        end)
+        local BDup=TBtn(M,"⧉ Duplicar",9,Color3.fromRGB(22,28,45),C.Purple);BDup.Size=UDim2.new(1/3,-8,0,28);BDup.Position=UDim2.new(1/3,0,0,318);BDup.ZIndex=47
+        BDup.MouseButton1Click:Connect(function()
+            CloseModal();local ok2,err2=OpDuplicate(meta.name)
+            if ok2 then Notify("⧉  Duplicado!",C.Purple);RebuildSaved(SvSearch.Text) else Notify("❌  "..tostring(err2),C.Danger) end
+        end)
+        local BExp=TBtn(M,IsPro() and "📋 Export" or "📋 Export(Pro)",9,IsPro() and Color3.fromRGB(18,32,20) or C.ProBG,IsPro() and C.File or C.Gold)
+        BExp.Size=UDim2.new(1/3,-8,0,28);BExp.Position=UDim2.new(2/3,-2,0,318);BExp.ZIndex=47
+        BExp.MouseButton1Click:Connect(function()
+            if not IsPro() then Notify("⭐  Recurso Pro!",C.Gold);return end
+            local ok2,json2=OpLoad(meta.name)
+            if ok2 then local tb=Instance.new("TextBox");tb.Text=json2;tb.Parent=Root;tb:CaptureFocus();tb:ReleaseFocus(false);tb:Destroy();Notify("📋  JSON copiado!",C.File)
+            else Notify("❌  "..tostring(json2),C.Danger) end
+        end)
+        local sep3=Instance.new("Frame");sep3.Size=UDim2.new(1,-20,0,1);sep3.Position=UDim2.new(0,10,0,358);sep3.BackgroundColor3=C.Border;sep3.BorderSizePixel=0;sep3.ZIndex=46;sep3.Parent=M
+        local BClose2=TBtn(M,"Fechar",10,C.Row,C.TextDim);BClose2.Size=UDim2.new(0.5,-14,0,28);BClose2.Position=UDim2.new(0,10,1,-38);BClose2.ZIndex=47;BClose2.MouseButton1Click:Connect(CloseModal)
+        local BDelM=TBtn(M,"🗑 Excluir",10,Color3.fromRGB(42,18,18),C.Danger);BDelM.Size=UDim2.new(0.5,-14,0,28);BDelM.Position=UDim2.new(0.5,4,1,-38);BDelM.ZIndex=47;Hov(BDelM,Color3.fromRGB(42,18,18),Color3.fromRGB(62,28,28))
+        BDelM.MouseButton1Click:Connect(function()
+            CloseModal();OpDelete(meta.name);Notify("🗑  \""..meta.name.."\" excluído.",C.Warning);RebuildSaved(SvSearch.Text);RebuildFolderBar()
+        end)
+        M.Position=UDim2.new(0.5,-185,0.5,-235);TweenService:Create(M,TweenInfo.new(0.22,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Position=UDim2.new(0.5,-185,0.5,-215)}):Play()
+    end
+
+    RebuildSaved = function(filter)
+        filter=(filter or ""):lower()
+        for _,c in ipairs(SvScroll:GetChildren()) do if c:IsA("TextButton") or c:IsA("Frame") then c:Destroy() end end
+        local index=LoadIndex()
+        if CurrentFolder~=nil then
+            local filtered={}
+            for _,e in ipairs(index) do if e.folder==CurrentFolder then table.insert(filtered,e) end end
+            index=filtered
+        end
+        if SortMode=="name" then table.sort(index,function(a,b) if a.favorite~=b.favorite then return a.favorite end;return a.name:lower()<b.name:lower() end)
+        elseif SortMode=="size" then table.sort(index,function(a,b) if a.favorite~=b.favorite then return a.favorite end;return (a.size or 0)>(b.size or 0) end)
+        else table.sort(index,function(a,b) if a.favorite~=b.favorite then return a.favorite end;return (a.time or 0)>(b.time or 0) end) end
+        local total=#index;SvCntL.Text=total..(total==1 and " save" or " saves")
+        local count=0
+        for _,meta in ipairs(index) do
+            if filter=="" or meta.name:lower():find(filter,1,true) then
+                count=count+1
+                local tagColor=meta.tag and TAG_COLORS[meta.tag] and TAG_COLORS[meta.tag].color or nil
+                local Btn=Instance.new("TextButton");Btn.Size=UDim2.new(1,0,1,0);Btn.BackgroundColor3=C.Card;Btn.Text="";Btn.BorderSizePixel=0;Btn.AutoButtonColor=false;Btn.LayoutOrder=count;Btn.Parent=SvScroll
+                Crn(Btn,8);Stk(Btn,tagColor or C.Border,tagColor and 1.5 or 1)
+                if tagColor then local tagBar=Instance.new("Frame");tagBar.Size=UDim2.new(0,3,1,0);tagBar.BackgroundColor3=tagColor;tagBar.BorderSizePixel=0;tagBar.ZIndex=3;tagBar.Parent=Btn;Crn(tagBar,4) end
+                local badgeX=5
+                local FB=Instance.new("Frame");FB.Size=UDim2.new(0,20,0,11);FB.Position=UDim2.new(0,badgeX,0,5);FB.BackgroundColor3=Color3.fromRGB(16,32,18);FB.BorderSizePixel=0;FB.Parent=Btn;Crn(FB,3);badgeX=badgeX+22
+                Lbl(FB,"💾",8,C.File,Enum.Font.GothamBold,Enum.TextXAlignment.Center).Size=UDim2.new(1,0,1,0)
+                if meta.favorite then
+                    local favB=Instance.new("Frame");favB.Size=UDim2.new(0,18,0,11);favB.Position=UDim2.new(0,badgeX,0,5);favB.BackgroundColor3=Color3.fromRGB(34,28,10);favB.BorderSizePixel=0;favB.Parent=Btn;Crn(favB,3)
+                    Lbl(favB,"⭐",7,C.Gold,Enum.Font.GothamBold,Enum.TextXAlignment.Center).Size=UDim2.new(1,0,1,0);badgeX=badgeX+20
+                end
+                local AB=Instance.new("Frame");AB.Size=UDim2.new(0,16,0,11);AB.Position=UDim2.new(0,badgeX,0,5);AB.BackgroundColor3=Color3.fromRGB(20,22,44);AB.BorderSizePixel=0;AB.Parent=Btn;Crn(AB,3)
+                Lbl(AB,"🔒",7,C.Accent,Enum.Font.GothamBold,Enum.TextXAlignment.Center).Size=UDim2.new(1,0,1,0)
+                if meta.folder then
+                    local folB=Instance.new("Frame");folB.Size=UDim2.new(0,16,0,11);folB.Position=UDim2.new(0,badgeX+18,0,5);folB.BackgroundColor3=Color3.fromRGB(18,28,16);folB.BorderSizePixel=0;folB.Parent=Btn;Crn(folB,3)
+                    Lbl(folB,"📁",7,C.File,Enum.Font.GothamBold,Enum.TextXAlignment.Center).Size=UDim2.new(1,0,1,0)
+                end
+                local BIco=Lbl(Btn,"◈",22,tagColor or C.Accent,Enum.Font.GothamBold,Enum.TextXAlignment.Center);BIco.Size=UDim2.new(1,0,0,28);BIco.Position=UDim2.new(0,0,0,20)
+                local BName=Lbl(Btn,meta.name,10,C.Text,Enum.Font.GothamBold,Enum.TextXAlignment.Center);BName.Size=UDim2.new(1,-8,0,15);BName.Position=UDim2.new(0,4,0,50);BName.TextTruncate=Enum.TextTruncate.AtEnd
+                local BMeta=Lbl(Btn,(meta.itemCount or 0).." itens",9,C.TextDim,Enum.Font.Gotham,Enum.TextXAlignment.Center);BMeta.Size=UDim2.new(1,0,0,12);BMeta.Position=UDim2.new(0,0,0,67)
+                local BSize=Lbl(Btn,FormatSize(meta.size or 0),9,C.TextDark,Enum.Font.Gotham,Enum.TextXAlignment.Center);BSize.Size=UDim2.new(1,0,0,12);BSize.Position=UDim2.new(0,0,0,80)
+                local BTime=Lbl(Btn,FormatTime(meta.time),8,C.TextDark,Enum.Font.Gotham,Enum.TextXAlignment.Center);BTime.Size=UDim2.new(1,0,0,11);BTime.Position=UDim2.new(0,0,0,92)
+                local BDelCard=TBtn(Btn,"🗑",9,Color3.fromRGB(44,18,18),C.Danger);BDelCard.Size=UDim2.new(1,0,0,16);BDelCard.Position=UDim2.new(0,0,1,-16);BDelCard.ZIndex=5;BDelCard.TextSize=9
+                Hov(BDelCard,Color3.fromRGB(44,18,18),Color3.fromRGB(68,28,28))
+                local delConfirming=false;local delTimer=nil
+                BDelCard.MouseButton1Click:Connect(function()
+                    if not delConfirming then
+                        delConfirming=true;BDelCard.Text="✔ Confirmar";BDelCard.BackgroundColor3=C.Danger;BDelCard.TextColor3=C.Text
+                        if delTimer then task.cancel(delTimer) end
+                        delTimer=task.delay(2,function() if BDelCard and BDelCard.Parent then delConfirming=false;BDelCard.Text="🗑";BDelCard.BackgroundColor3=Color3.fromRGB(44,18,18) end end)
+                    else
+                        if delTimer then task.cancel(delTimer) end
+                        local capName=meta.name;OpDelete(capName);Notify("🗑  \""..capName.."\" excluído.",C.Warning);SetLastAction("Excluído: "..capName);RebuildSaved(SvSearch.Text);RebuildFolderBar()
+                    end
+                end)
+                Btn.MouseEnter:Connect(function() TweenService:Create(Btn,TweenInfo.new(0.1),{BackgroundColor3=C.RowHov}):Play() end)
+                Btn.MouseLeave:Connect(function() TweenService:Create(Btn,TweenInfo.new(0.1),{BackgroundColor3=C.Card}):Play() end)
+                local capMeta=meta;Btn.MouseButton1Click:Connect(function() if not delConfirming then ShowModal(capMeta) end end)
+            end
+        end
+        if count==0 then
+            local ef=Instance.new("Frame");ef.Size=UDim2.new(1,0,0,140);ef.BackgroundTransparency=1;ef.LayoutOrder=999;ef.Parent=SvScroll
+            local ei=Lbl(ef,"◈",38,C.TextDark,Enum.Font.GothamBold,Enum.TextXAlignment.Center);ei.Size=UDim2.new(1,0,0,50);ei.Position=UDim2.new(0,0,0,14)
+            local em=Lbl(ef,filter~="" and "Nenhum save encontrado." or "Nenhum save ainda.",11,C.TextDark,Enum.Font.Gotham,Enum.TextXAlignment.Center);em.Size=UDim2.new(1,0,0,44);em.Position=UDim2.new(0,0,0,66);em.TextWrapped=true
+        end
+    end
+    SvSearch:GetPropertyChangedSignal("Text"):Connect(function() RebuildSaved(SvSearch.Text) end)
+end
+InitSavedTab()
+
+-- ============================================================
+-- ABA 3 – OPÇÕES
+-- ============================================================
+local PgOpt=MkTab("Opções","⚙",88)
+local SOpt=MkScroll(PgOpt)
+local SOLL=Instance.new("UIListLayout");SOLL.SortOrder=Enum.SortOrder.LayoutOrder;SOLL.Padding=UDim.new(0,8);SOLL.Parent=SOpt
+local SOPP=Instance.new("UIPadding");SOPP.PaddingLeft=UDim.new(0,14);SOPP.PaddingRight=UDim.new(0,14);SOPP.PaddingTop=UDim.new(0,14);SOPP.Parent=SOpt
+
+Sec(SOpt,"AÇÕES RÁPIDAS")
+
+local function QBtn(lbl,bg,tc,hov,fn)
+    local f=Instance.new("Frame");f.Size=UDim2.new(1,0,0,36);f.BackgroundColor3=bg;f.BorderSizePixel=0;f.Parent=SOpt;Crn(f,7);Stk(f,C.Border,1)
+    local lf=Lbl(f,lbl,11,tc,Enum.Font.GothamBold);lf.Size=UDim2.new(1,-40,1,0);lf.Position=UDim2.new(0,14,0,0)
+    local arr=Lbl(f,"›",14,C.TextDark,Enum.Font.GothamBold,Enum.TextXAlignment.Center);arr.Size=UDim2.new(0,24,1,0);arr.Position=UDim2.new(1,-28,0,0)
+    local btn=Instance.new("TextButton");btn.Size=UDim2.new(1,0,1,0);btn.BackgroundTransparency=1;btn.Text="";btn.Parent=f
+    btn.MouseEnter:Connect(function() TweenService:Create(f,TweenInfo.new(0.1),{BackgroundColor3=hov}):Play() end)
+    btn.MouseLeave:Connect(function() TweenService:Create(f,TweenInfo.new(0.1),{BackgroundColor3=bg}):Play() end)
+    btn.MouseButton1Click:Connect(fn)
+    return f
+end
+
+QBtn("↻  Sincronizar",C.Card,C.TextDim,C.RowHov,function() SyncIndex();RebuildSaved();Notify("↻  Sincronizado!",C.Success) end)
+QBtn("◈  Ver Salvados",C.AccentDim,C.Text,Color3.fromRGB(50,110,185),function() RebuildSaved();SetTab("Salvados") end)
+QBtn("⎘  Ir para Copiar",C.Card,C.Accent,C.RowHov,function() SetTab("Copiar") end)
+QBtn("📖  Tutorial",Color3.fromRGB(18,26,44),C.Accent,Color3.fromRGB(24,38,66),function() OpenTutFrame() end)
+QBtn("✕  Limpar Seleção",Color3.fromRGB(18,20,36),C.TextDim,C.RowHov,function() ClearSelection();Notify("✕  Seleção limpa.",C.TextDim) end)
+QBtn("⭐  Ativar Pro",C.ProBG,C.Gold,Color3.fromRGB(38,30,10),function()
+    if IsPro() then Notify("⭐  Clique 2x no botão Pro para desativar.",C.Gold);return end
+    SetTab("Copiar");task.delay(0.1,OpenProFrame)
+end)
+QBtn("🔓  Voltar para o Free",Color3.fromRGB(32,18,18),C.TextDim,Color3.fromRGB(48,24,24),function()
+    if not IsPro() then Notify("⚠  Você já está no Free.",C.TextDim);return end
+    CloseModal()
+    local Ov=Instance.new("Frame");Ov.Name="_ov";Ov.Size=UDim2.new(1,0,1,0);Ov.BackgroundColor3=Color3.new(0,0,0);Ov.BackgroundTransparency=0.5;Ov.BorderSizePixel=0;Ov.ZIndex=40;Ov.Parent=Root
+    local M=Instance.new("Frame");M.Name="_modal";M.Size=UDim2.new(0,308,0,162);M.Position=UDim2.new(0.5,-154,0.5,-81);M.BackgroundColor3=C.Panel;M.BorderSizePixel=0;M.ZIndex=45;M.Parent=Root;Crn(M,10);Stk(M,C.Danger,1.5)
+    local ml=Lbl(M,"Voltar para o Free?\n\nA chave salva será apagada.\nVocê pode reativar a qualquer momento.",11,C.Text,Enum.Font.GothamBold,Enum.TextXAlignment.Center);ml.Size=UDim2.new(1,-20,0,96);ml.Position=UDim2.new(0,10,0,10);ml.TextWrapped=true;ml.ZIndex=46
+    local BY=TBtn(M,"🔓  Confirmar",10,C.Danger,C.Text);BY.Size=UDim2.new(0.5,-14,0,34);BY.Position=UDim2.new(0,10,1,-46);BY.ZIndex=47;Hov(BY,C.Danger,Color3.fromRGB(185,50,50))
+    BY.MouseButton1Click:Connect(function()
+        pcall(delfile,CONFIG.KEY_FILE);License.active=false;License.key="";License.plan="free"
+        ResetToFreeVisual();CloseModal();RebuildSaved();RebuildFolderBar();Notify("🔓  Voltou para o Free.",C.Warning);SetLastAction("Voltou para o Free")
+    end)
+    local BN=TBtn(M,"Cancelar",10,C.Row,C.TextDim);BN.Size=UDim2.new(0.5,-14,0,34);BN.Position=UDim2.new(0.5,4,1,-46);BN.ZIndex=47;Hov(BN,C.Row,C.RowHov);BN.MouseButton1Click:Connect(CloseModal)
+    M.Position=UDim2.new(0.5,-154,0.5,-101);TweenService:Create(M,TweenInfo.new(0.22,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Position=UDim2.new(0.5,-154,0.5,-81)}):Play()
+end)
+
+Sec(SOpt,"FERRAMENTAS")
+QBtn("🔒  Ancorar tudo no workspace",Color3.fromRGB(20,18,36),C.Purple,Color3.fromRGB(30,26,52),function()
+    local c=0;for _,o in ipairs(workspace:GetDescendants()) do if o:IsA("BasePart") then o.Anchored=true;c=c+1 end end;Notify("🔒  "..c.." partes ancoradas.",C.Purple)
+end)
+QBtn("🗑  Limpar workspace completo",Color3.fromRGB(38,16,16),C.Danger,Color3.fromRGB(55,22,22),function()
+    SaveBackup("manual");for _,o in ipairs(workspace:GetChildren()) do if o~=workspace.Terrain and o.ClassName~="Camera" then pcall(function() o:Destroy() end) end end;Notify("🗑  Workspace limpo.",C.Warning)
+end)
+
+Sec(SOpt,"TECLADO")
+local keysBox=Instance.new("Frame");keysBox.Size=UDim2.new(1,0,0,148);keysBox.BackgroundColor3=C.Card;keysBox.BorderSizePixel=0;keysBox.Parent=SOpt;Crn(keysBox,8);Stk(keysBox,C.Border,1)
+local KBLL=Instance.new("UIListLayout");KBLL.SortOrder=Enum.SortOrder.LayoutOrder;KBLL.Parent=keysBox
+
+local function KeyRow(key,desc)
+    local r=Instance.new("Frame");r.Size=UDim2.new(1,0,0,24);r.BackgroundTransparency=1;r.Parent=keysBox
+    local sep=Instance.new("Frame");sep.Size=UDim2.new(1,-20,0,1);sep.Position=UDim2.new(0,10,1,-1);sep.BackgroundColor3=C.Border;sep.BorderSizePixel=0;sep.Parent=r
+    local kb=Instance.new("Frame");kb.Size=UDim2.new(0,88,0,18);kb.Position=UDim2.new(0,10,0.5,-9);kb.BackgroundColor3=C.Row;kb.BorderSizePixel=0;kb.Parent=r;Crn(kb,5)
+    Lbl(kb,key,9,C.Accent,Enum.Font.GothamBold,Enum.TextXAlignment.Center).Size=UDim2.new(1,0,1,0)
+    local dl=Lbl(r,desc,9,C.TextDim,Enum.Font.Gotham);dl.Size=UDim2.new(1,-108,1,0);dl.Position=UDim2.new(0,106,0,0)
+end
+KeyRow("RightCtrl","Toggle GUI (mostrar/ocultar)")
+KeyRow("Q / E","Rotacionar ao posicionar (±45°)")
+KeyRow("ESC","Cancelar placement ativo")
+KeyRow("Click","Selecionar parte ou modelo")
+KeyRow("Shift+Click","Adicionar à seleção")
+KeyRow("2x ⭐ Pro","Desativar o Pro")
+
+-- ============================================================
+-- APPLY PRO / RESET FREE
+-- ============================================================
+ApplyProVisual = function()
+    TL.BackgroundColor3=C.Gold;Stk(Win,C.Gold,1);PlanBadge.BackgroundColor3=C.ProBG
+    PlanLbl.Text="⭐ PRO";PlanLbl.TextColor3=C.Gold
+    PBLbl.Text="⭐  Pro ativo – ilimitado + grade + escala + tags + pastas + favoritos!";PBLbl.TextColor3=C.Gold
+    PlanBanner.BackgroundColor3=C.ProBG;Stk(PlanBanner,C.Gold,1);FolderRowFrame.Visible=true
+    BPro.Text="⭐  Pro Ativo!";BPro.TextColor3=C.Success;BPro.BackgroundColor3=Color3.fromRGB(16,32,16);Stk(BPro,C.Success,1)
+    proBtnClickTime=0;RebuildFolderBar()
+end
+
+ResetToFreeVisual = function()
+    TL.BackgroundColor3=C.Accent;Stk(Win,C.Border,1);PlanBadge.BackgroundColor3=C.Row
+    PlanLbl.Text="FREE";PlanLbl.TextColor3=C.TextDim
+    PBLbl.Text="Free – 50 saves  •  Ative o Pro para saves ilimitados";PBLbl.TextColor3=C.TextDim
+    PlanBanner.BackgroundColor3=C.Card;Stk(PlanBanner,C.Border,1);FolderRowFrame.Visible=false
+    BPro.Text="⭐ Pro";BPro.TextColor3=C.Gold;BPro.BackgroundColor3=C.ProBG;Stk(BPro,C.Gold,1)
+    ProActivateBtn.Text="🔑  Ativar Pro Permanente";ProActivateBtn.BackgroundColor3=C.Gold;ProActivateBtn.TextColor3=Color3.fromRGB(14,11,0)
+    ProTitle.Text="Moon Copy Lite PRO"
+    ProDesc.Text="Ative o Pro com a Key de acesso.\nO Pro será permanente – nunca precisará ativar novamente!";ProDesc.TextColor3=C.TextDim
+    proBtnClickTime=0;RebuildFolderBar()
+end
+
+-- ============================================================
+-- INIT
+-- ============================================================
+local function TryAutoActivate()
+    local savedKey=LoadKeyLocal()
+    if savedKey and CheckKey(savedKey) then
+        License.active=true;License.key=savedKey;License.plan="pro";ApplyProVisual()
+        ProActivateBtn.Text="✔  Já ativado";ProActivateBtn.BackgroundColor3=C.Success;ProActivateBtn.TextColor3=Color3.fromRGB(8,18,8)
+        ProTitle.Text="⭐  Pro Ativo!";ProDesc.Text="Chave carregada automaticamente.";ProDesc.TextColor3=C.File
+        SetLastAction("Pro ativo!");print("[MoonCopy] Pro ativo!")
+    else
+        FolderRowFrame.Visible=false
+    end
+end
+
+EnsureFolder();SyncIndex();TryAutoActivate()
+SetTab("Copiar");RebuildSaved();RebuildFolderBar()
+
+UserInputService.InputBegan:Connect(function(i,gp)
+    if gp then return end
+    if i.KeyCode==Enum.KeyCode.RightControl then Win.Visible=not Win.Visible end
+end)
+
+print("[Moon Copy Lite Pro] v3.5 carregado!")
+print("  Plano: "..(IsPro() and "PRO ⭐" or "FREE"))
+print("  Seleção por clique ativa")
 local LocalPlayer = Players.LocalPlayer
 local Mouse       = LocalPlayer:GetMouse()
 local Camera      = workspace.CurrentCamera
