@@ -1,4 +1,4 @@
-O erro persiste porque ainda há funções grandes demais. A solução definitiva é usar loadstring ou quebrar ainda mais as funções. Vou reescrever com todas as funções refatoradas ao máximo para garantir que nenhuma ultrapasse o limite de 200 registros locais.
+
 -- ================================================================
 --  MOON COPY LITE — PRO EDITION v3.5
 --  + Fix definitivo: Out of local registers
